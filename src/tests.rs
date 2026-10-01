@@ -172,3 +172,35 @@ fn mint_rejects_tickets_after_inventory_is_sold_out() {
     client.mint_ticket(&Address::generate(&env), &tier_name, &100, &claim_hash);
     client.mint_ticket(&Address::generate(&env), &tier_name, &100, &claim_hash);
 }
+
+#[test]
+fn claim_transfers_ticket_to_authenticated_wallet() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, EventTicketContract);
+    let client = EventTicketContractClient::new(&env, &contract_id);
+    client.initialize(
+        &Address::generate(&env),
+        &String::from_str(&env, "Test event"),
+        &1,
+        &500,
+    );
+    let claim_hash = String::from_str(&env, "claim-secret");
+    let ticket_id = client.mint_ticket(
+        &Address::generate(&env),
+        &String::from_str(&env, "General"),
+        &100,
+        &claim_hash,
+    );
+    let new_owner = Address::generate(&env);
+
+    assert_eq!(
+        client.get_ticket(&ticket_id).status,
+        TicketStatus::Claimable
+    );
+    assert!(client.claim_ticket(&claim_hash, &new_owner));
+
+    let claimed_ticket = client.get_ticket(&ticket_id);
+    assert_eq!(claimed_ticket.status, TicketStatus::Valid);
+    assert_eq!(claimed_ticket.current_owner, new_owner);
+}
