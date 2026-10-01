@@ -56,3 +56,19 @@ fn initialize_rejects_zero_supply() {
         &500,
     );
 }
+
+#[test]
+#[should_panic]
+fn initialize_rejects_royalty_above_one_hundred_percent() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, EventTicketContract);
+    let client = EventTicketContractClient::new(&env, &contract_id);
+
+    client.initialize(
+        &Address::generate(&env),
+        &String::from_str(&env, "Test event"),
+        &1,
+        &10_001,
+    );
+}
