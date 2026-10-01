@@ -39,15 +39,102 @@ pub struct EventMeta {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContractEventPayload {
+    pub event_id: u64,
+    pub ticket_id: Option<u64>,
+    pub ticket_owner: Option<Address>,
+    pub ticket_status: Option<String>,
+    pub tier_name: Option<String>,
+    pub ticket_price: Option<i128>,
+    pub is_listed_resale: Option<bool>,
+    pub resale_price: Option<i128>,
+    pub mint_timestamp: Option<u64>,
+    pub redeem_timestamp: Option<u64>,
+    pub event_name: Option<String>,
+    pub organizer: Option<Address>,
+    pub total_supply: Option<u32>,
+    pub minted_count: Option<u32>,
+    pub royalty_bps: Option<u32>,
+    pub previous_owner: Option<Address>,
+    pub royalty: Option<i128>,
+    pub seller_payout: Option<i128>,
+}
+
+impl ContractEventPayload {
+    fn for_event(meta: &EventMeta) -> Self {
+        Self {
+            event_id: meta.event_id,
+            ticket_id: None,
+            ticket_owner: None,
+            ticket_status: None,
+            tier_name: None,
+            ticket_price: None,
+            is_listed_resale: None,
+            resale_price: None,
+            mint_timestamp: None,
+            redeem_timestamp: None,
+            event_name: Some(meta.name.clone()),
+            organizer: Some(meta.organizer.clone()),
+            total_supply: Some(meta.total_supply),
+            minted_count: Some(meta.minted_count),
+            royalty_bps: Some(meta.royalty_bps),
+            previous_owner: None,
+            royalty: None,
+            seller_payout: None,
+        }
+    }
+
+    fn for_ticket(
+        env: &Env,
+        ticket: &Ticket,
+        previous_owner: Option<Address>,
+        royalty: Option<i128>,
+        seller_payout: Option<i128>,
+    ) -> Self {
+        let status = match ticket.status {
+            TicketStatus::Valid => "Valid",
+            TicketStatus::Claimable => "Claimable",
+            TicketStatus::Used => "Used",
+            TicketStatus::ProofNFT => "ProofNFT",
+        };
+
+        Self {
+            event_id: ticket.event_id,
+            ticket_id: Some(ticket.id),
+            ticket_owner: Some(ticket.current_owner.clone()),
+            ticket_status: Some(String::from_str(env, status)),
+            tier_name: Some(ticket.tier_name.clone()),
+            ticket_price: Some(ticket.price),
+            is_listed_resale: Some(ticket.is_listed_resale),
+            resale_price: Some(ticket.resale_price),
+            mint_timestamp: Some(ticket.mint_timestamp),
+            redeem_timestamp: Some(ticket.redeem_timestamp),
+            event_name: None,
+            organizer: None,
+            total_supply: None,
+            minted_count: None,
+            royalty_bps: None,
+            previous_owner,
+            royalty,
+            seller_payout,
+        }
+    }
+}
+
+#[contracttype]
 pub enum DataKey {
     EventInfo,
     Ticket(u64),
     TicketCounter,
     ClaimLink(String),
+    StorageVersion,
 }
 
 #[contract]
 pub struct EventTicketContract;
+
+const STORAGE_VERSION: u32 = 1;
 
 #[contractimpl]
 impl EventTicketContract {
@@ -87,15 +174,45 @@ impl EventTicketContract {
             .instance()
             .set(&DataKey::EventInfo, &event_info);
         env.storage().instance().set(&DataKey::TicketCounter, &0u64);
+        env.storage()
+            .instance()
+            .set(&DataKey::StorageVersion, &STORAGE_VERSION);
         env.events().publish(
             (symbol_short!("init"), event_info.event_id),
-            (
-                event_info.organizer.clone(),
-                event_info.name.clone(),
-                event_info.total_supply,
-                event_info.royalty_bps,
-            ),
+            ContractEventPayload::for_event(&event_info),
         );
+    }
+
+    /// Migrate legacy unversioned storage to the current schema version.
+    pub fn migrate_storage(env: Env) -> u32 {
+        let meta: EventMeta = env
+            .storage()
+            .instance()
+            .get(&DataKey::EventInfo)
+            .expect("Event is not initialized");
+        meta.organizer.require_auth();
+
+        let version: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::StorageVersion)
+            .unwrap_or(0);
+        if version == STORAGE_VERSION {
+            return version;
+        }
+        if version != 0 {
+            panic!("Unsupported storage version");
+        }
+
+        let _: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TicketCounter)
+            .expect("Legacy ticket counter is missing");
+        env.storage()
+            .instance()
+            .set(&DataKey::StorageVersion, &STORAGE_VERSION);
+        STORAGE_VERSION
     }
 
     /// Issue a new unique ticket digital asset / claimable balance
@@ -127,8 +244,16 @@ impl EventTicketContract {
             .instance()
             .get(&DataKey::TicketCounter)
             .unwrap_or(0);
-        counter += 1;
-        meta.minted_count += 1;
+        if counter != u64::from(meta.minted_count) {
+            panic!("Ticket counter and minted inventory are inconsistent");
+        }
+        counter = counter
+            .checked_add(1)
+            .expect("Ticket counter overflow");
+        meta.minted_count = meta
+            .minted_count
+            .checked_add(1)
+            .expect("Minted inventory overflow");
 
         let status = if claim_secret_hash.len() > 0 {
             TicketStatus::Claimable
@@ -167,12 +292,7 @@ impl EventTicketContract {
 
         env.events().publish(
             (symbol_short!("mint"), meta.event_id),
-            (
-                counter,
-                ticket.current_owner.clone(),
-                ticket.tier_name.clone(),
-                price,
-            ),
+            ContractEventPayload::for_ticket(&env, &ticket, None, None, None),
         );
 
         counter
@@ -198,6 +318,7 @@ impl EventTicketContract {
             panic!("Ticket already claimed or invalid status");
         }
 
+        let previous_owner = ticket.current_owner.clone();
         ticket.current_owner = new_owner;
         ticket.status = TicketStatus::Valid;
         ticket.claim_secret_hash = String::from_str(&env, "");
@@ -210,7 +331,13 @@ impl EventTicketContract {
             .remove(&DataKey::ClaimLink(claim_secret_hash));
         env.events().publish(
             (symbol_short!("claim"), ticket.event_id),
-            (ticket_id, ticket.current_owner.clone()),
+            ContractEventPayload::for_ticket(
+                &env,
+                &ticket,
+                Some(previous_owner),
+                None,
+                None,
+            ),
         );
 
         true
@@ -250,7 +377,7 @@ impl EventTicketContract {
             .set(&DataKey::Ticket(ticket_id), &ticket);
         env.events().publish(
             (symbol_short!("checkin"), ticket.event_id),
-            (ticket_id, ticket.redeem_timestamp),
+            ContractEventPayload::for_ticket(&env, &ticket, None, None, None),
         );
 
         TicketStatus::ProofNFT
@@ -299,7 +426,7 @@ impl EventTicketContract {
             .set(&DataKey::Ticket(ticket_id), &ticket);
         env.events().publish(
             (symbol_short!("listing"), ticket.event_id),
-            (ticket_id, seller, resale_price),
+            ContractEventPayload::for_ticket(&env, &ticket, None, None, None),
         );
     }
 
@@ -341,7 +468,13 @@ impl EventTicketContract {
             .set(&DataKey::Ticket(ticket_id), &ticket);
         env.events().publish(
             (symbol_short!("resale"), ticket.event_id),
-            (ticket_id, previous_owner, buyer, royalty, seller_payout),
+            ContractEventPayload::for_ticket(
+                &env,
+                &ticket,
+                Some(previous_owner),
+                Some(royalty),
+                Some(seller_payout),
+            ),
         );
     }
 
@@ -357,7 +490,7 @@ impl EventTicketContract {
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, Address, Env};
+    use soroban_sdk::{testutils::{Address as _, Events as _}, Address, Env, TryFromVal};
 
     fn setup_event(env: &Env, total_supply: u32, royalty_bps: u32) -> (Address, Address) {
         env.mock_all_auths();
@@ -373,6 +506,34 @@ mod test {
         );
 
         (contract_id, organizer)
+    }
+
+    #[test]
+    fn migration_versions_legacy_storage_without_losing_tickets() {
+        let env = Env::default();
+        let (contract_id, _) = setup_event(&env, 1, 500);
+        let client = EventTicketContractClient::new(&env, &contract_id);
+        let buyer = Address::generate(&env);
+        client.mint_ticket(
+            &buyer,
+            &String::from_str(&env, "General"),
+            &100,
+            &String::from_str(&env, ""),
+        );
+
+        env.as_contract(&contract_id, || {
+            env.storage().instance().remove(&DataKey::StorageVersion);
+        });
+
+        assert_eq!(client.migrate_storage(), STORAGE_VERSION);
+        assert_eq!(client.migrate_storage(), STORAGE_VERSION);
+        assert_eq!(client.get_ticket(&1).current_owner, buyer);
+        assert_eq!(
+            env.as_contract(&contract_id, || {
+                env.storage().instance().get(&DataKey::StorageVersion)
+            }),
+            Some(STORAGE_VERSION)
+        );
     }
 
     #[test]
