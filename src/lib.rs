@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, String, Symbol, Vec};
+use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, String};
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -83,7 +83,9 @@ impl EventTicketContract {
             royalty_bps,
         };
 
-        env.storage().instance().set(&DataKey::EventInfo, &event_info);
+        env.storage()
+            .instance()
+            .set(&DataKey::EventInfo, &event_info);
         env.storage().instance().set(&DataKey::TicketCounter, &0u64);
         env.events().publish(
             (symbol_short!("init"), event_info.event_id),
@@ -112,7 +114,11 @@ impl EventTicketContract {
             panic!("Event sold out");
         }
 
-        let mut counter: u64 = env.storage().instance().get(&DataKey::TicketCounter).unwrap_or(0);
+        let mut counter: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TicketCounter)
+            .unwrap_or(0);
         counter += 1;
         meta.minted_count += 1;
 
@@ -137,17 +143,28 @@ impl EventTicketContract {
             claim_secret_hash: claim_secret_hash.clone(),
         };
 
-        env.storage().persistent().set(&DataKey::Ticket(counter), &ticket);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Ticket(counter), &ticket);
         env.storage().instance().set(&DataKey::EventInfo, &meta);
-        env.storage().instance().set(&DataKey::TicketCounter, &counter);
+        env.storage()
+            .instance()
+            .set(&DataKey::TicketCounter, &counter);
 
         if claim_secret_hash.len() > 0 {
-            env.storage().persistent().set(&DataKey::ClaimLink(claim_secret_hash), &counter);
+            env.storage()
+                .persistent()
+                .set(&DataKey::ClaimLink(claim_secret_hash), &counter);
         }
 
         env.events().publish(
             (symbol_short!("mint"), meta.event_id),
-            (counter, ticket.current_owner.clone(), ticket.tier_name.clone(), price),
+            (
+                counter,
+                ticket.current_owner.clone(),
+                ticket.tier_name.clone(),
+                price,
+            ),
         );
 
         counter
@@ -177,8 +194,12 @@ impl EventTicketContract {
         ticket.status = TicketStatus::Valid;
         ticket.claim_secret_hash = String::from_str(&env, "");
 
-        env.storage().persistent().set(&DataKey::Ticket(ticket_id), &ticket);
-        env.storage().persistent().remove(&DataKey::ClaimLink(claim_secret_hash));
+        env.storage()
+            .persistent()
+            .set(&DataKey::Ticket(ticket_id), &ticket);
+        env.storage()
+            .persistent()
+            .remove(&DataKey::ClaimLink(claim_secret_hash));
         env.events().publish(
             (symbol_short!("claim"), ticket.event_id),
             (ticket_id, ticket.current_owner.clone()),
@@ -214,7 +235,9 @@ impl EventTicketContract {
         ticket.status = TicketStatus::ProofNFT;
         ticket.redeem_timestamp = env.ledger().timestamp();
 
-        env.storage().persistent().set(&DataKey::Ticket(ticket_id), &ticket);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Ticket(ticket_id), &ticket);
         env.events().publish(
             (symbol_short!("checkin"), ticket.event_id),
             (ticket_id, ticket.redeem_timestamp),
@@ -261,7 +284,9 @@ impl EventTicketContract {
         ticket.is_listed_resale = true;
         ticket.resale_price = resale_price;
 
-        env.storage().persistent().set(&DataKey::Ticket(ticket_id), &ticket);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Ticket(ticket_id), &ticket);
         env.events().publish(
             (symbol_short!("listing"), ticket.event_id),
             (ticket_id, seller, resale_price),
@@ -296,7 +321,9 @@ impl EventTicketContract {
         ticket.is_listed_resale = false;
         ticket.resale_price = 0;
 
-        env.storage().persistent().set(&DataKey::Ticket(ticket_id), &ticket);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Ticket(ticket_id), &ticket);
         env.events().publish(
             (symbol_short!("resale"), ticket.event_id),
             (ticket_id, previous_owner, buyer, royalty, seller_payout),
@@ -305,6 +332,9 @@ impl EventTicketContract {
 
     /// Fetch ticket details
     pub fn get_ticket(env: Env, ticket_id: u64) -> Ticket {
-        env.storage().persistent().get(&DataKey::Ticket(ticket_id)).unwrap()
+        env.storage()
+            .persistent()
+            .get(&DataKey::Ticket(ticket_id))
+            .unwrap()
     }
 }
