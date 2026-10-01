@@ -284,8 +284,7 @@ impl EventTicketContract {
         // Anti-scalping cap: Max 150% of original price.
         let max_resale = ticket
             .price
-            .checked_mul(150)
-            .map(|price| price / 100)
+            .checked_add(ticket.price / 2)
             .unwrap_or(i128::MAX);
         if resale_price > max_resale {
             panic!("Resale price exceeds anti-scalping price cap (150%)");
@@ -445,5 +444,31 @@ mod test {
         assert_eq!(ticket.resale_price, 0);
         assert!(client.try_buy_resale(&Address::generate(&env), &1).is_err());
         assert_eq!(client.get_ticket(&1).current_owner, seller);
+    }
+
+    #[test]
+    fn resale_cap_handles_rounding_and_large_prices() {
+        let env = Env::default();
+        let (contract_id, _) = setup_event(&env, 4, 500);
+        let client = EventTicketContractClient::new(&env, &contract_id);
+        let seller = Address::generate(&env);
+        let tier = String::from_str(&env, "General");
+        let no_claim = String::from_str(&env, "");
+
+        client.mint_ticket(&seller, &tier, &101, &no_claim);
+        client.list_resale(&seller, &1, &151);
+
+        client.mint_ticket(&seller, &tier, &101, &no_claim);
+        assert!(client.try_list_resale(&seller, &2, &152).is_err());
+
+        let large_price = i128::MAX / 2;
+        let exact_cap = large_price + large_price / 2;
+        client.mint_ticket(&seller, &tier, &large_price, &no_claim);
+        client.list_resale(&seller, &3, &exact_cap);
+
+        client.mint_ticket(&seller, &tier, &large_price, &no_claim);
+        assert!(client
+            .try_list_resale(&seller, &4, &(exact_cap + 1))
+            .is_err());
     }
 }
