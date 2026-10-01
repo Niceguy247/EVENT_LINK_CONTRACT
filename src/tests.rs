@@ -152,3 +152,23 @@ fn mint_rejects_negative_price() {
         &String::from_str(&env, ""),
     );
 }
+
+#[test]
+#[should_panic]
+fn mint_rejects_tickets_after_inventory_is_sold_out() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, EventTicketContract);
+    let client = EventTicketContractClient::new(&env, &contract_id);
+    client.initialize(
+        &Address::generate(&env),
+        &String::from_str(&env, "Test event"),
+        &1,
+        &500,
+    );
+    let tier_name = String::from_str(&env, "General");
+    let claim_hash = String::from_str(&env, "");
+
+    client.mint_ticket(&Address::generate(&env), &tier_name, &100, &claim_hash);
+    client.mint_ticket(&Address::generate(&env), &tier_name, &100, &claim_hash);
+}
