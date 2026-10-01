@@ -32,7 +32,7 @@ Lifecycle events are emitted for initialization, minting, claims, check-in, list
 
 - Only one event is represented by the contract state; per-event isolation and multi-event storage are not implemented.
 - `buy_resale` updates contract ownership and calculates payout values, but does not transfer payment or distribute royalties.
-- There are no unit tests yet. Add authorization, boundary, replay, inventory, check-in, resale-cap, and event-payload tests before relying on this contract.
+- Unit tests cover large-value resale royalty calculations, claim-link uniqueness, and resale cancellation on check-in. Expand coverage for authorization, inventory, resale caps, and event payloads before relying on this contract.
 - This repository does not define a contract upgrade or migration policy.
 
 ## Requirements
