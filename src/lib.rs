@@ -338,3 +338,6 @@ impl EventTicketContract {
             .unwrap()
     }
 }
+
+#[cfg(test)]
+mod tests;
