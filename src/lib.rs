@@ -49,6 +49,9 @@ pub enum DataKey {
 #[contract]
 pub struct EventTicketContract;
 
+const MAX_EVENT_NAME_LENGTH: u32 = 128;
+const MAX_EVENT_SUPPLY: u32 = 1_000_000;
+
 #[contractimpl]
 impl EventTicketContract {
     /// Initialize Event Metadata & Royalty structure
@@ -67,8 +70,14 @@ impl EventTicketContract {
         if name.len() == 0 {
             panic!("Event name cannot be empty");
         }
+        if name.len() > MAX_EVENT_NAME_LENGTH {
+            panic!("Event name cannot exceed 128 bytes");
+        }
         if total_supply == 0 {
             panic!("Event supply must be greater than zero");
+        }
+        if total_supply > MAX_EVENT_SUPPLY {
+            panic!("Event supply cannot exceed 1000000 tickets");
         }
         if royalty_bps > 10_000 {
             panic!("Royalty rate cannot exceed 100 percent");
@@ -373,6 +382,31 @@ mod test {
         );
 
         (contract_id, organizer)
+    }
+
+    #[test]
+    fn initialize_rejects_oversized_name_and_supply() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let organizer = Address::generate(&env);
+        let long_name = "E".repeat(MAX_EVENT_NAME_LENGTH as usize + 1);
+
+        let name_contract_id = env.register_contract(None, EventTicketContract);
+        let name_client = EventTicketContractClient::new(&env, &name_contract_id);
+        assert!(name_client
+            .try_initialize(&organizer, &String::from_str(&env, &long_name), &1, &500,)
+            .is_err());
+
+        let supply_contract_id = env.register_contract(None, EventTicketContract);
+        let supply_client = EventTicketContractClient::new(&env, &supply_contract_id);
+        assert!(supply_client
+            .try_initialize(
+                &organizer,
+                &String::from_str(&env, "Event"),
+                &(MAX_EVENT_SUPPLY + 1),
+                &500,
+            )
+            .is_err());
     }
 
     #[test]
