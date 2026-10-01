@@ -108,3 +108,25 @@ fn initialize_cannot_be_called_twice() {
     client.initialize(&organizer, &String::from_str(&env, "First"), &1, &500);
     client.initialize(&organizer, &String::from_str(&env, "Second"), &1, &500);
 }
+
+#[test]
+#[should_panic]
+fn mint_rejects_zero_price() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, EventTicketContract);
+    let client = EventTicketContractClient::new(&env, &contract_id);
+    client.initialize(
+        &Address::generate(&env),
+        &String::from_str(&env, "Test event"),
+        &1,
+        &500,
+    );
+
+    client.mint_ticket(
+        &Address::generate(&env),
+        &String::from_str(&env, "General"),
+        &0,
+        &String::from_str(&env, ""),
+    );
+}
