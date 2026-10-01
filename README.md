@@ -26,13 +26,17 @@ The current contract stores one event (`event_id` is initialized to `101`) and t
 | `buy_resale(buyer, ticket_id)` | Change ticket ownership for a listed ticket and record the royalty/seller payout values in an event. |
 | `get_ticket(ticket_id)` | Read a stored ticket record. |
 
-Lifecycle events are emitted for initialization, minting, claims, check-in, listings, and resale. An indexer can consume those events to build a history, subject to ledger event retention and indexing policy.
+The implemented ticket lifecycle is `Claimable -> Valid -> ProofNFT` for claimed tickets, or `Valid -> ProofNFT` for tickets without a claim link. `ProofNFT` is terminal: it cannot be listed or purchased. A claim link is removed when claimed; there is no contract method for manually expiring or revoking a link. Listing cancellation is only implicit when check-in clears the listing; there is no standalone cancellation method. These are per-ticket transitions; the contract does not model event-level lifecycle states.
+
+Events are emitted for initialization, minting, claims, check-in, listings, and resale. Their payloads are method-specific and should be interpreted alongside the state transitions above, subject to ledger event retention and indexing policy.
 
 ### Current limitations
 
 - Only one event is represented by the contract state; per-event isolation and multi-event storage are not implemented.
+- The contract has no application-level claim-link expiry or revocation flow. Claim links and tickets are stored with ledger-managed persistence and can expire if not renewed according to network storage rules.
+- A resale listing has no standalone cancellation operation; check-in clears it as part of making the ticket terminal.
 - `buy_resale` updates contract ownership and calculates payout values, but does not transfer payment or distribute royalties.
-- Unit tests cover large-value resale royalty calculations, claim-link uniqueness, and resale cancellation on check-in. Expand coverage for authorization, inventory, resale caps, and event payloads before relying on this contract.
+- Unit tests cover large-value royalty calculations, claim-link uniqueness, claim-to-check-in lifecycle invariants, and listing cancellation on check-in. Authorization, inventory boundaries, resale caps, and event schemas need further coverage before production use.
 - This repository does not define a contract upgrade or migration policy.
 
 ## Requirements
@@ -59,6 +63,10 @@ cargo build --target wasm32-unknown-unknown --release
 ```
 
 The GitHub Actions workflow runs these same checks on pull requests and pushes to `main`.
+
+### Contract errors
+
+Expected contract failures use the public `Error` numeric codes (1-21) instead of string panics; `ContractError` is an alias for this enum. Clients should decode these errors by enum value; Soroban authorization failures from `require_auth` remain native authorization errors. Missing tickets and invalid claim links are reported as `TicketNotFound` and `InvalidClaimLink`, respectively.
 
 ## Deploy to Stellar Testnet
 
