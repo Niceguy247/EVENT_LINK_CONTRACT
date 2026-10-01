@@ -26,7 +26,7 @@ The current contract stores one event (`event_id` is initialized to `101`) and t
 | `buy_resale(buyer, ticket_id)` | Change ticket ownership for a listed ticket and record the royalty/seller payout values in an event. |
 | `get_ticket(ticket_id)` | Read a stored ticket record. |
 
-Lifecycle events are emitted for initialization, minting, claims, check-in, listings, and resale. An indexer can consume those events to build a history, subject to ledger event retention and indexing policy.
+Lifecycle events keep their existing topics (`init`, `mint`, `claim`, `checkin`, `listing`, and `resale`) and share the flattened `ContractEventPayload` data schema. The payload always includes `event_id`; initialization supplies event metadata fields, while ticket operations supply the complete updated ticket fields. Ownership changes additionally include `previous_owner`, and resale payouts populate `royalty` and `seller_payout`. Fields that do not apply are `None`. Indexers should also account for ledger event retention and indexing policy.
 
 ### Current limitations
 
