@@ -95,3 +95,16 @@ fn initialize_accepts_one_hundred_percent_royalty() {
 
     assert_eq!(client.get_ticket(&ticket_id).price, 100);
 }
+
+#[test]
+#[should_panic]
+fn initialize_cannot_be_called_twice() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, EventTicketContract);
+    let client = EventTicketContractClient::new(&env, &contract_id);
+    let organizer = Address::generate(&env);
+
+    client.initialize(&organizer, &String::from_str(&env, "First"), &1, &500);
+    client.initialize(&organizer, &String::from_str(&env, "Second"), &1, &500);
+}
