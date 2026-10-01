@@ -26,14 +26,15 @@ The current contract stores one event (`event_id` is initialized to `101`) and t
 | `buy_resale(buyer, ticket_id)` | Change ticket ownership for a listed ticket and record the royalty/seller payout values in an event. |
 | `get_ticket(ticket_id)` | Read a stored ticket record. |
 
-Lifecycle events are emitted for initialization, minting, claims, check-in, listings, and resale. An indexer can consume those events to build a history, subject to ledger event retention and indexing policy.
+Every lifecycle event uses the two-topic form `(event, action)` and the same `EventPayload` data structure. Payloads include `schema_version` (currently `1`), `event_id`, optional `ticket_id`, `actor`, `previous_owner`, `new_owner`, `status`, `name`, `tier_name`, `total_supply`, `royalty_bps`, `price`, `royalty`, and `seller_payout`, plus `timestamp`. Status symbols are `valid`, `claimable`, `used`, and `proof`; ownership fields are populated only when relevant. Unused fields are `None`. The action topic is `init`, `mint`, `claim`, `checkin`, `listing`, or `resale`; incompatible payload changes require a schema-version change. Indexers should filter by the `event` namespace and decode the version before interpreting optional fields. Ledger event retention and indexing policy still apply.
 
 ### Current limitations
 
 - Only one event is represented by the contract state; per-event isolation and multi-event storage are not implemented.
 - `buy_resale` updates contract ownership and calculates payout values, but does not transfer payment or distribute royalties.
 - Unit tests cover large-value resale royalty calculations, claim-link uniqueness, and resale cancellation on check-in. Expand coverage for authorization, inventory, resale caps, and event payloads before relying on this contract.
-- This repository does not define a contract upgrade or migration policy.
+- New deployments initialize instance storage at version 1. `migrate_storage` lets the configured organizer mark initialized, unversioned version-0 storage as version 1 without rewriting ticket records; it is idempotent and rejects unknown versions or incomplete legacy state.
+- Storage versioning does not upgrade contract WASM. Code upgrades must be authorized and executed through Soroban's deployment/admin controls separately. Future storage changes must increment the version, add an explicit migration from each supported prior version, and test that tickets and claim links remain readable. Do not assume upgrades are available for deployments without configured upgrade authority.
 
 ## Requirements
 
@@ -59,6 +60,10 @@ cargo build --target wasm32-unknown-unknown --release
 ```
 
 The GitHub Actions workflow runs these same checks on pull requests and pushes to `main`.
+
+### Contract errors
+
+Expected contract failures use the public `Error` numeric codes (1-21) instead of string panics; `ContractError` is an alias for this enum. Clients should decode these errors by enum value; Soroban authorization failures from `require_auth` remain native authorization errors. Missing tickets and invalid claim links are reported as `TicketNotFound` and `InvalidClaimLink`, respectively.
 
 ## Deploy to Stellar Testnet
 
