@@ -406,6 +406,7 @@ checksum = "40404c3f5f511ec4da6fe866ddf6a717c309fdbb69fbbad7b0f3edab8f2e835f"
 name = "event_ticket"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek",
  "ethnum",
  "soroban-sdk",
 ]
