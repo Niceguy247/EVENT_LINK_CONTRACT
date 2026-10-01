@@ -18,7 +18,7 @@ The current contract stores one event (`event_id` is initialized to `101`) and t
 
 | Method | Purpose |
 | --- | --- |
-| `initialize(organizer, name, total_supply, royalty_bps)` | Initialize the event once; rejects an empty name, zero supply, and royalties above 100%. |
+| `initialize(organizer, name, total_supply, royalty_bps)` | Initialize once; name is 1-100 bytes, supply is 1-1,000,000, and royalties cannot exceed 100%. |
 | `mint_ticket(buyer, tier_name, price, claim_secret_hash)` | Mint a ticket record while inventory remains; requires a positive price. |
 | `claim_ticket(claim_secret_hash, new_owner)` | Redeem a claim link and transfer the ticket record to the authenticated owner. |
 | `check_in_ticket(organizer, ticket_id)` | Authorize the organizer and convert an unused, claimed ticket to `ProofNFT`. |

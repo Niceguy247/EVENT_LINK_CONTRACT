@@ -49,6 +49,9 @@ pub enum DataKey {
 #[contract]
 pub struct EventTicketContract;
 
+const MAX_EVENT_NAME_BYTES: u32 = 100;
+const MAX_EVENT_TICKET_SUPPLY: u32 = 1_000_000;
+
 #[contractimpl]
 impl EventTicketContract {
     /// Initialize Event Metadata & Royalty structure
@@ -67,8 +70,14 @@ impl EventTicketContract {
         if name.len() == 0 {
             panic!("Event name cannot be empty");
         }
+        if name.len() > MAX_EVENT_NAME_BYTES {
+            panic!("Event name exceeds the 100-byte limit");
+        }
         if total_supply == 0 {
             panic!("Event supply must be greater than zero");
+        }
+        if total_supply > MAX_EVENT_TICKET_SUPPLY {
+            panic!("Event supply exceeds the 1,000,000-ticket limit");
         }
         if royalty_bps > 10_000 {
             panic!("Royalty rate cannot exceed 100 percent");
@@ -445,5 +454,33 @@ mod test {
         assert_eq!(ticket.resale_price, 0);
         assert!(client.try_buy_resale(&Address::generate(&env), &1).is_err());
         assert_eq!(client.get_ticket(&1).current_owner, seller);
+    }
+
+    #[test]
+    #[should_panic]
+    fn initialize_rejects_event_name_over_limit() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, EventTicketContract);
+        let client = EventTicketContractClient::new(&env, &contract_id);
+        let long_name = String::from_str(&env, &"a".repeat(101));
+
+        client.initialize(&Address::generate(&env), &long_name, &1, &500);
+    }
+
+    #[test]
+    #[should_panic]
+    fn initialize_rejects_supply_over_limit() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, EventTicketContract);
+        let client = EventTicketContractClient::new(&env, &contract_id);
+
+        client.initialize(
+            &Address::generate(&env),
+            &String::from_str(&env, "Test event"),
+            &1_000_001,
+            &500,
+        );
     }
 }
