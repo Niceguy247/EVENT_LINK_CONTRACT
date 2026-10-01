@@ -33,7 +33,8 @@ Every lifecycle event uses the two-topic form `(event, action)` and the same `Ev
 - Only one event is represented by the contract state; per-event isolation and multi-event storage are not implemented.
 - `buy_resale` updates contract ownership and calculates payout values, but does not transfer payment or distribute royalties.
 - Unit tests cover large-value resale royalty calculations, claim-link uniqueness, and resale cancellation on check-in. Expand coverage for authorization, inventory, resale caps, and event payloads before relying on this contract.
-- This repository does not define a contract upgrade or migration policy.
+- New deployments initialize instance storage at version 1. `migrate_storage` lets the configured organizer mark initialized, unversioned version-0 storage as version 1 without rewriting ticket records; it is idempotent and rejects unknown versions or incomplete legacy state.
+- Storage versioning does not upgrade contract WASM. Code upgrades must be authorized and executed through Soroban's deployment/admin controls separately. Future storage changes must increment the version, add an explicit migration from each supported prior version, and test that tickets and claim links remain readable. Do not assume upgrades are available for deployments without configured upgrade authority.
 
 ## Requirements
 
@@ -59,6 +60,10 @@ cargo build --target wasm32-unknown-unknown --release
 ```
 
 The GitHub Actions workflow runs these same checks on pull requests and pushes to `main`.
+
+### Contract errors
+
+Expected contract failures use the public `Error` numeric codes (1-21) instead of string panics; `ContractError` is an alias for this enum. Clients should decode these errors by enum value; Soroban authorization failures from `require_auth` remain native authorization errors. Missing tickets and invalid claim links are reported as `TicketNotFound` and `InvalidClaimLink`, respectively.
 
 ## Deploy to Stellar Testnet
 
