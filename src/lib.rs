@@ -1,5 +1,7 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, String};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, symbol_short, Address, Env, String, Symbol,
+};
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -39,6 +41,26 @@ pub struct EventMeta {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EventPayload {
+    pub schema_version: u32,
+    pub event_id: u64,
+    pub ticket_id: Option<u64>,
+    pub actor: Option<Address>,
+    pub previous_owner: Option<Address>,
+    pub new_owner: Option<Address>,
+    pub status: Option<Symbol>,
+    pub name: Option<String>,
+    pub tier_name: Option<String>,
+    pub total_supply: Option<u32>,
+    pub royalty_bps: Option<u32>,
+    pub price: Option<i128>,
+    pub royalty: Option<i128>,
+    pub seller_payout: Option<i128>,
+    pub timestamp: u64,
+}
+
+#[contracttype]
 pub enum DataKey {
     EventInfo,
     Ticket(u64),
@@ -48,6 +70,40 @@ pub enum DataKey {
 
 #[contract]
 pub struct EventTicketContract;
+
+fn new_event_payload(env: &Env, event_id: u64) -> EventPayload {
+    EventPayload {
+        schema_version: 1,
+        event_id,
+        ticket_id: None,
+        actor: None,
+        previous_owner: None,
+        new_owner: None,
+        status: None,
+        name: None,
+        tier_name: None,
+        total_supply: None,
+        royalty_bps: None,
+        price: None,
+        royalty: None,
+        seller_payout: None,
+        timestamp: env.ledger().timestamp(),
+    }
+}
+
+fn publish_event(env: &Env, action: Symbol, payload: EventPayload) {
+    env.events()
+        .publish((symbol_short!("event"), action), payload);
+}
+
+fn ticket_status_symbol(status: &TicketStatus) -> Symbol {
+    match status {
+        TicketStatus::Valid => symbol_short!("valid"),
+        TicketStatus::Claimable => symbol_short!("claimable"),
+        TicketStatus::Used => symbol_short!("used"),
+        TicketStatus::ProofNFT => symbol_short!("proof"),
+    }
+}
 
 #[contractimpl]
 impl EventTicketContract {
@@ -87,15 +143,12 @@ impl EventTicketContract {
             .instance()
             .set(&DataKey::EventInfo, &event_info);
         env.storage().instance().set(&DataKey::TicketCounter, &0u64);
-        env.events().publish(
-            (symbol_short!("init"), event_info.event_id),
-            (
-                event_info.organizer.clone(),
-                event_info.name.clone(),
-                event_info.total_supply,
-                event_info.royalty_bps,
-            ),
-        );
+        let mut payload = new_event_payload(&env, event_info.event_id);
+        payload.actor = Some(event_info.organizer.clone());
+        payload.name = Some(event_info.name.clone());
+        payload.total_supply = Some(event_info.total_supply);
+        payload.royalty_bps = Some(event_info.royalty_bps);
+        publish_event(&env, symbol_short!("init"), payload);
     }
 
     /// Issue a new unique ticket digital asset / claimable balance
@@ -165,15 +218,14 @@ impl EventTicketContract {
                 .set(&DataKey::ClaimLink(claim_secret_hash), &counter);
         }
 
-        env.events().publish(
-            (symbol_short!("mint"), meta.event_id),
-            (
-                counter,
-                ticket.current_owner.clone(),
-                ticket.tier_name.clone(),
-                price,
-            ),
-        );
+        let mut payload = new_event_payload(&env, meta.event_id);
+        payload.ticket_id = Some(counter);
+        payload.actor = Some(ticket.current_owner.clone());
+        payload.new_owner = Some(ticket.current_owner.clone());
+        payload.status = Some(ticket_status_symbol(&ticket.status));
+        payload.tier_name = Some(ticket.tier_name.clone());
+        payload.price = Some(price);
+        publish_event(&env, symbol_short!("mint"), payload);
 
         counter
     }
@@ -198,6 +250,7 @@ impl EventTicketContract {
             panic!("Ticket already claimed or invalid status");
         }
 
+        let previous_owner = ticket.current_owner.clone();
         ticket.current_owner = new_owner;
         ticket.status = TicketStatus::Valid;
         ticket.claim_secret_hash = String::from_str(&env, "");
@@ -208,10 +261,13 @@ impl EventTicketContract {
         env.storage()
             .persistent()
             .remove(&DataKey::ClaimLink(claim_secret_hash));
-        env.events().publish(
-            (symbol_short!("claim"), ticket.event_id),
-            (ticket_id, ticket.current_owner.clone()),
-        );
+        let mut payload = new_event_payload(&env, ticket.event_id);
+        payload.ticket_id = Some(ticket_id);
+        payload.actor = Some(ticket.current_owner.clone());
+        payload.previous_owner = Some(previous_owner);
+        payload.new_owner = Some(ticket.current_owner.clone());
+        payload.status = Some(ticket_status_symbol(&ticket.status));
+        publish_event(&env, symbol_short!("claim"), payload);
 
         true
     }
@@ -248,10 +304,11 @@ impl EventTicketContract {
         env.storage()
             .persistent()
             .set(&DataKey::Ticket(ticket_id), &ticket);
-        env.events().publish(
-            (symbol_short!("checkin"), ticket.event_id),
-            (ticket_id, ticket.redeem_timestamp),
-        );
+        let mut payload = new_event_payload(&env, ticket.event_id);
+        payload.ticket_id = Some(ticket_id);
+        payload.actor = Some(organizer);
+        payload.status = Some(ticket_status_symbol(&ticket.status));
+        publish_event(&env, symbol_short!("checkin"), payload);
 
         TicketStatus::ProofNFT
     }
@@ -297,10 +354,12 @@ impl EventTicketContract {
         env.storage()
             .persistent()
             .set(&DataKey::Ticket(ticket_id), &ticket);
-        env.events().publish(
-            (symbol_short!("listing"), ticket.event_id),
-            (ticket_id, seller, resale_price),
-        );
+        let mut payload = new_event_payload(&env, ticket.event_id);
+        payload.ticket_id = Some(ticket_id);
+        payload.actor = Some(seller.clone());
+        payload.status = Some(ticket_status_symbol(&ticket.status));
+        payload.price = Some(resale_price);
+        publish_event(&env, symbol_short!("listing"), payload);
     }
 
     /// Transfer a listed ticket and record royalty payout values in an event
@@ -326,10 +385,11 @@ impl EventTicketContract {
         let meta: EventMeta = env.storage().instance().get(&DataKey::EventInfo).unwrap();
 
         // Calculate Royalty
+        let resale_price = ticket.resale_price;
         let royalty_bps = meta.royalty_bps as i128;
-        let royalty = (ticket.resale_price / 10_000) * royalty_bps
-            + ((ticket.resale_price % 10_000) * royalty_bps) / 10_000;
-        let seller_payout = ticket.resale_price - royalty;
+        let royalty = (resale_price / 10_000) * royalty_bps
+            + ((resale_price % 10_000) * royalty_bps) / 10_000;
+        let seller_payout = resale_price - royalty;
 
         let previous_owner = ticket.current_owner.clone();
         ticket.current_owner = buyer.clone();
@@ -339,10 +399,16 @@ impl EventTicketContract {
         env.storage()
             .persistent()
             .set(&DataKey::Ticket(ticket_id), &ticket);
-        env.events().publish(
-            (symbol_short!("resale"), ticket.event_id),
-            (ticket_id, previous_owner, buyer, royalty, seller_payout),
-        );
+        let mut payload = new_event_payload(&env, ticket.event_id);
+        payload.ticket_id = Some(ticket_id);
+        payload.actor = Some(buyer.clone());
+        payload.previous_owner = Some(previous_owner);
+        payload.new_owner = Some(buyer);
+        payload.status = Some(ticket_status_symbol(&ticket.status));
+        payload.price = Some(resale_price);
+        payload.royalty = Some(royalty);
+        payload.seller_payout = Some(seller_payout);
+        publish_event(&env, symbol_short!("resale"), payload);
     }
 
     /// Fetch ticket details
@@ -357,7 +423,10 @@ impl EventTicketContract {
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, Address, Env};
+    use soroban_sdk::{
+        testutils::{Address as _, Events as _},
+        Address, Env, TryFromVal,
+    };
 
     fn setup_event(env: &Env, total_supply: u32, royalty_bps: u32) -> (Address, Address) {
         env.mock_all_auths();
@@ -393,6 +462,42 @@ mod test {
         client.buy_resale(&buyer, &1);
 
         assert_eq!(client.get_ticket(&1).current_owner, buyer);
+    }
+
+    #[test]
+    fn lifecycle_events_share_versioned_payload_schema() {
+        let env = Env::default();
+        let (contract_id, organizer) = setup_event(&env, 1, 500);
+        let client = EventTicketContractClient::new(&env, &contract_id);
+        let seller = Address::generate(&env);
+        let buyer = Address::generate(&env);
+        let claim_hash = String::from_str(&env, "event-schema-claim-hash");
+
+        client.mint_ticket(
+            &seller,
+            &String::from_str(&env, "General"),
+            &100,
+            &claim_hash,
+        );
+        client.claim_ticket(&claim_hash, &seller);
+        client.list_resale(&seller, &1, &100);
+        client.buy_resale(&buyer, &1);
+        client.check_in_ticket(&organizer, &1);
+
+        let events = env.events().all();
+        assert_eq!(events.len(), 6);
+        for index in 0..events.len() {
+            let (_, topics, data) = events.get(index).unwrap();
+            assert_eq!(topics.len(), 2);
+            assert_eq!(
+                Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap(),
+                symbol_short!("event")
+            );
+            let payload = EventPayload::try_from_val(&env, &data).unwrap();
+            assert_eq!(payload.schema_version, 1);
+            assert_eq!(payload.event_id, 101);
+            assert_eq!(payload.ticket_id.is_some(), index > 0);
+        }
     }
 
     #[test]
