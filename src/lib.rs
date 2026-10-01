@@ -127,8 +127,16 @@ impl EventTicketContract {
             .instance()
             .get(&DataKey::TicketCounter)
             .unwrap_or(0);
-        counter += 1;
-        meta.minted_count += 1;
+        if counter != u64::from(meta.minted_count) {
+            panic!("Ticket counter and minted inventory are inconsistent");
+        }
+        counter = counter
+            .checked_add(1)
+            .expect("Ticket counter overflow");
+        meta.minted_count = meta
+            .minted_count
+            .checked_add(1)
+            .expect("Minted inventory overflow");
 
         let status = if claim_secret_hash.len() > 0 {
             TicketStatus::Claimable
@@ -445,5 +453,27 @@ mod test {
         assert_eq!(ticket.resale_price, 0);
         assert!(client.try_buy_resale(&Address::generate(&env), &1).is_err());
         assert_eq!(client.get_ticket(&1).current_owner, seller);
+    }
+
+    #[test]
+    fn repeated_mints_preserve_unique_inventory_ids() {
+        let env = Env::default();
+        let (contract_id, _) = setup_event(&env, 2, 500);
+        let client = EventTicketContractClient::new(&env, &contract_id);
+        let first_buyer = Address::generate(&env);
+        let second_buyer = Address::generate(&env);
+        let third_buyer = Address::generate(&env);
+        let tier = String::from_str(&env, "General");
+        let no_claim = String::from_str(&env, "");
+
+        assert_eq!(client.mint_ticket(&first_buyer, &tier, &100, &no_claim), 1);
+        assert_eq!(client.mint_ticket(&second_buyer, &tier, &100, &no_claim), 2);
+        assert!(client
+            .try_mint_ticket(&third_buyer, &tier, &100, &no_claim)
+            .is_err());
+
+        assert_eq!(client.get_ticket(&1).current_owner, first_buyer);
+        assert_eq!(client.get_ticket(&2).current_owner, second_buyer);
+        assert!(client.try_get_ticket(&3).is_err());
     }
 }
