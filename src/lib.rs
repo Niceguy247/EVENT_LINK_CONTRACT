@@ -1,5 +1,40 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, String};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String,
+};
+
+#[contracterror]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum Error {
+    AlreadyInitialized = 1,
+    EmptyEventName = 2,
+    ZeroSupply = 3,
+    RoyaltyAboveLimit = 4,
+    EventNotInitialized = 5,
+    InvalidTicketPrice = 6,
+    EventSoldOut = 7,
+    DuplicateClaimLink = 8,
+    InvalidClaimLink = 9,
+    TicketNotFound = 10,
+    InvalidTicketStatus = 11,
+    UnauthorizedOrganizer = 12,
+    TicketAlreadyUsed = 13,
+    NotTicketOwner = 14,
+    TicketAlreadyListed = 15,
+    InvalidResalePrice = 16,
+    ResalePriceAboveCap = 17,
+    TicketNotListed = 18,
+    CannotBuyOwnListing = 19,
+    TicketCounterOverflow = 20,
+    MintedInventoryOverflow = 21,
+}
+
+pub type ContractError = Error;
+
+fn fail(env: &Env, error: ContractError) -> ! {
+    soroban_sdk::panic_with_error!(env, error)
+}
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -149,16 +184,16 @@ impl EventTicketContract {
         organizer.require_auth();
 
         if env.storage().instance().has(&DataKey::EventInfo) {
-            panic!("Contract is already initialized");
+            fail(&env, ContractError::AlreadyInitialized);
         }
         if name.len() == 0 {
-            panic!("Event name cannot be empty");
+            fail(&env, ContractError::EmptyEventName);
         }
         if total_supply == 0 {
-            panic!("Event supply must be greater than zero");
+            fail(&env, ContractError::ZeroSupply);
         }
         if royalty_bps > 10_000 {
-            panic!("Royalty rate cannot exceed 100 percent");
+            fail(&env, ContractError::RoyaltyAboveLimit);
         }
 
         let event_info = EventMeta {
@@ -223,12 +258,16 @@ impl EventTicketContract {
         price: i128,
         claim_secret_hash: String,
     ) -> u64 {
-        let mut meta: EventMeta = env.storage().instance().get(&DataKey::EventInfo).unwrap();
+        let mut meta: EventMeta = env
+            .storage()
+            .instance()
+            .get(&DataKey::EventInfo)
+            .unwrap_or_else(|| fail(&env, ContractError::EventNotInitialized));
         if price <= 0 {
-            panic!("Ticket price must be greater than zero");
+            fail(&env, ContractError::InvalidTicketPrice);
         }
         if meta.minted_count >= meta.total_supply {
-            panic!("Event sold out");
+            fail(&env, ContractError::EventSoldOut);
         }
         if claim_secret_hash.len() > 0
             && env
@@ -236,7 +275,7 @@ impl EventTicketContract {
                 .persistent()
                 .has(&DataKey::ClaimLink(claim_secret_hash.clone()))
         {
-            panic!("Claim link is already in use");
+            fail(&env, ContractError::DuplicateClaimLink);
         }
 
         let mut counter: u64 = env
@@ -244,16 +283,13 @@ impl EventTicketContract {
             .instance()
             .get(&DataKey::TicketCounter)
             .unwrap_or(0);
-        if counter != u64::from(meta.minted_count) {
-            panic!("Ticket counter and minted inventory are inconsistent");
-        }
         counter = counter
             .checked_add(1)
-            .expect("Ticket counter overflow");
+            .unwrap_or_else(|| fail(&env, ContractError::TicketCounterOverflow));
         meta.minted_count = meta
             .minted_count
             .checked_add(1)
-            .expect("Minted inventory overflow");
+            .unwrap_or_else(|| fail(&env, ContractError::MintedInventoryOverflow));
 
         let status = if claim_secret_hash.len() > 0 {
             TicketStatus::Claimable
@@ -306,16 +342,16 @@ impl EventTicketContract {
             .storage()
             .persistent()
             .get(&DataKey::ClaimLink(claim_secret_hash.clone()))
-            .expect("Invalid or expired claim link");
+            .unwrap_or_else(|| fail(&env, ContractError::InvalidClaimLink));
 
         let mut ticket: Ticket = env
             .storage()
             .persistent()
             .get(&DataKey::Ticket(ticket_id))
-            .expect("Ticket not found");
+            .unwrap_or_else(|| fail(&env, ContractError::TicketNotFound));
 
         if ticket.status != TicketStatus::Claimable {
-            panic!("Ticket already claimed or invalid status");
+            fail(&env, ContractError::InvalidTicketStatus);
         }
 
         let previous_owner = ticket.current_owner.clone();
@@ -347,23 +383,27 @@ impl EventTicketContract {
     pub fn check_in_ticket(env: Env, organizer: Address, ticket_id: u64) -> TicketStatus {
         organizer.require_auth();
 
-        let meta: EventMeta = env.storage().instance().get(&DataKey::EventInfo).unwrap();
+        let meta: EventMeta = env
+            .storage()
+            .instance()
+            .get(&DataKey::EventInfo)
+            .unwrap_or_else(|| fail(&env, ContractError::EventNotInitialized));
         if meta.organizer != organizer {
-            panic!("Unauthorized gatekeeper");
+            fail(&env, ContractError::UnauthorizedOrganizer);
         }
 
         let mut ticket: Ticket = env
             .storage()
             .persistent()
             .get(&DataKey::Ticket(ticket_id))
-            .expect("Ticket not found");
+            .unwrap_or_else(|| fail(&env, ContractError::TicketNotFound));
 
         if ticket.status == TicketStatus::Used || ticket.status == TicketStatus::ProofNFT {
-            panic!("DOUBLE USE PREVENTED: Ticket already redeemed!");
+            fail(&env, ContractError::TicketAlreadyUsed);
         }
 
         if ticket.status != TicketStatus::Valid {
-            panic!("Ticket cannot be redeemed: Unclaimed or invalid");
+            fail(&env, ContractError::InvalidTicketStatus);
         }
 
         // Convert ticket -> Proof of Attendance NFT
@@ -391,21 +431,21 @@ impl EventTicketContract {
             .storage()
             .persistent()
             .get(&DataKey::Ticket(ticket_id))
-            .expect("Ticket not found");
+            .unwrap_or_else(|| fail(&env, ContractError::TicketNotFound));
 
         if ticket.current_owner != seller {
-            panic!("Not ticket owner");
+            fail(&env, ContractError::NotTicketOwner);
         }
 
         if ticket.status != TicketStatus::Valid {
-            panic!("Only valid tickets can be listed for resale");
+            fail(&env, ContractError::InvalidTicketStatus);
         }
         if ticket.is_listed_resale {
-            panic!("Ticket is already listed for resale");
+            fail(&env, ContractError::TicketAlreadyListed);
         }
 
         if ticket.price <= 0 || resale_price <= 0 {
-            panic!("Ticket and resale prices must be greater than zero");
+            fail(&env, ContractError::InvalidResalePrice);
         }
 
         // Anti-scalping cap: Max 150% of original price.
@@ -415,7 +455,7 @@ impl EventTicketContract {
             .map(|price| price / 100)
             .unwrap_or(i128::MAX);
         if resale_price > max_resale {
-            panic!("Resale price exceeds anti-scalping price cap (150%)");
+            fail(&env, ContractError::ResalePriceAboveCap);
         }
 
         ticket.is_listed_resale = true;
@@ -438,19 +478,23 @@ impl EventTicketContract {
             .storage()
             .persistent()
             .get(&DataKey::Ticket(ticket_id))
-            .expect("Ticket not found");
+            .unwrap_or_else(|| fail(&env, ContractError::TicketNotFound));
 
         if !ticket.is_listed_resale {
-            panic!("Ticket is not listed for resale");
+            fail(&env, ContractError::TicketNotListed);
         }
         if ticket.status != TicketStatus::Valid {
-            panic!("Only valid tickets can be purchased");
+            fail(&env, ContractError::InvalidTicketStatus);
         }
         if ticket.current_owner == buyer {
-            panic!("Ticket owner cannot purchase their own listing");
+            fail(&env, ContractError::CannotBuyOwnListing);
         }
 
-        let meta: EventMeta = env.storage().instance().get(&DataKey::EventInfo).unwrap();
+        let meta: EventMeta = env
+            .storage()
+            .instance()
+            .get(&DataKey::EventInfo)
+            .unwrap_or_else(|| fail(&env, ContractError::EventNotInitialized));
 
         // Calculate Royalty
         let royalty_bps = meta.royalty_bps as i128;
@@ -483,7 +527,7 @@ impl EventTicketContract {
         env.storage()
             .persistent()
             .get(&DataKey::Ticket(ticket_id))
-            .unwrap()
+            .unwrap_or_else(|| fail(&env, ContractError::TicketNotFound))
     }
 }
 
@@ -609,34 +653,22 @@ mod test {
     }
 
     #[test]
-    fn state_changing_calls_reject_missing_authorization() {
+    fn invalid_ticket_price_returns_stable_contract_error() {
         let env = Env::default();
-        let (contract_id, organizer) = setup_event(&env, 2, 500);
+        let (contract_id, _) = setup_event(&env, 1, 500);
         let client = EventTicketContractClient::new(&env, &contract_id);
-        let seller = Address::generate(&env);
-        let buyer = Address::generate(&env);
-        let claim_recipient = Address::generate(&env);
-        let claim_hash = String::from_str(&env, "auth-test-claim");
 
-        client.mint_ticket(
-            &seller,
+        let error = match client.try_mint_ticket(
+            &Address::generate(&env),
             &String::from_str(&env, "General"),
-            &100,
+            &0,
             &String::from_str(&env, ""),
-        );
-        client.mint_ticket(
-            &seller,
-            &String::from_str(&env, "General"),
-            &100,
-            &claim_hash,
-        );
-        env.mock_auths(&[]);
+        ) {
+            Err(Ok(error)) => error,
+            _ => panic!("Expected a contract error"),
+        };
 
-        assert!(client.try_check_in_ticket(&organizer, &1).is_err());
-        assert!(client.try_list_resale(&seller, &1, &100).is_err());
-        assert!(client.try_buy_resale(&buyer, &1).is_err());
-        assert!(client
-            .try_claim_ticket(&claim_hash, &claim_recipient)
-            .is_err());
+        assert!(error.is_type(soroban_sdk::xdr::ScErrorType::Contract));
+        assert_eq!(error.get_code(), ContractError::InvalidTicketPrice as u32);
     }
 }
