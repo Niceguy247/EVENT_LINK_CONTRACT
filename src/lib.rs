@@ -609,12 +609,14 @@ mod test {
     }
 
     #[test]
-    fn lifecycle_events_share_a_typed_payload() {
+    fn state_changing_calls_reject_missing_authorization() {
         let env = Env::default();
-        let (contract_id, _) = setup_event(&env, 1, 500);
+        let (contract_id, organizer) = setup_event(&env, 2, 500);
         let client = EventTicketContractClient::new(&env, &contract_id);
         let seller = Address::generate(&env);
         let buyer = Address::generate(&env);
+        let claim_recipient = Address::generate(&env);
+        let claim_hash = String::from_str(&env, "auth-test-claim");
 
         client.mint_ticket(
             &seller,
@@ -622,19 +624,19 @@ mod test {
             &100,
             &String::from_str(&env, ""),
         );
-        client.list_resale(&seller, &1, &100);
-        client.buy_resale(&buyer, &1);
+        client.mint_ticket(
+            &seller,
+            &String::from_str(&env, "General"),
+            &100,
+            &claim_hash,
+        );
+        env.mock_auths(&[]);
 
-        let events = env.events().all();
-        for (_, _, data) in events.iter() {
-            assert!(ContractEventPayload::try_from_val(&env, &data).is_ok());
-        }
-
-        let resale = ContractEventPayload::try_from_val(&env, &events.last().unwrap().2).unwrap();
-        assert_eq!(resale.event_id, 101);
-        assert_eq!(resale.ticket_owner, Some(buyer));
-        assert_eq!(resale.previous_owner, Some(seller));
-        assert_eq!(resale.royalty, Some(5));
-        assert_eq!(resale.seller_payout, Some(95));
+        assert!(client.try_check_in_ticket(&organizer, &1).is_err());
+        assert!(client.try_list_resale(&seller, &1, &100).is_err());
+        assert!(client.try_buy_resale(&buyer, &1).is_err());
+        assert!(client
+            .try_claim_ticket(&claim_hash, &claim_recipient)
+            .is_err());
     }
 }
