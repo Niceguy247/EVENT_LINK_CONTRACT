@@ -446,4 +446,36 @@ mod test {
         assert!(client.try_buy_resale(&Address::generate(&env), &1).is_err());
         assert_eq!(client.get_ticket(&1).current_owner, seller);
     }
+
+    #[test]
+    fn state_changing_calls_reject_missing_authorization() {
+        let env = Env::default();
+        let (contract_id, organizer) = setup_event(&env, 2, 500);
+        let client = EventTicketContractClient::new(&env, &contract_id);
+        let seller = Address::generate(&env);
+        let buyer = Address::generate(&env);
+        let claim_recipient = Address::generate(&env);
+        let claim_hash = String::from_str(&env, "auth-test-claim");
+
+        client.mint_ticket(
+            &seller,
+            &String::from_str(&env, "General"),
+            &100,
+            &String::from_str(&env, ""),
+        );
+        client.mint_ticket(
+            &seller,
+            &String::from_str(&env, "General"),
+            &100,
+            &claim_hash,
+        );
+        env.mock_auths(&[]);
+
+        assert!(client.try_check_in_ticket(&organizer, &1).is_err());
+        assert!(client.try_list_resale(&seller, &1, &100).is_err());
+        assert!(client.try_buy_resale(&buyer, &1).is_err());
+        assert!(client
+            .try_claim_ticket(&claim_hash, &claim_recipient)
+            .is_err());
+    }
 }
