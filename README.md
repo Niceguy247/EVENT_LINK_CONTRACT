@@ -26,14 +26,15 @@ The current contract stores one event (`event_id` is initialized to `101`) and t
 | `buy_resale(buyer, ticket_id)` | Change ticket ownership for a listed ticket and record the royalty/seller payout values in an event. |
 | `get_ticket(ticket_id)` | Read a stored ticket record. |
 
-Lifecycle events are emitted for initialization, minting, claims, check-in, listings, and resale. An indexer can consume those events to build a history, subject to ledger event retention and indexing policy.
+Lifecycle events keep their existing topics (`init`, `mint`, `claim`, `checkin`, `listing`, and `resale`) and share the flattened `ContractEventPayload` data schema. The payload always includes `event_id`; initialization supplies event metadata fields, while ticket operations supply the complete updated ticket fields. Ownership changes additionally include `previous_owner`, and resale payouts populate `royalty` and `seller_payout`. Fields that do not apply are `None`. Indexers should also account for ledger event retention and indexing policy.
 
 ### Current limitations
 
 - Only one event is represented by the contract state; per-event isolation and multi-event storage are not implemented.
 - `buy_resale` updates contract ownership and calculates payout values, but does not transfer payment or distribute royalties.
 - Unit tests cover large-value resale royalty calculations, claim-link uniqueness, and resale cancellation on check-in. Expand coverage for authorization, inventory, resale caps, and event payloads before relying on this contract.
-- This repository does not define a contract upgrade or migration policy.
+- New deployments initialize instance storage at version 1. `migrate_storage` lets the configured organizer mark initialized, unversioned version-0 storage as version 1 without rewriting ticket records; it is idempotent and rejects unknown versions or incomplete legacy state.
+- Storage versioning does not upgrade contract WASM. Code upgrades must be authorized and executed through Soroban's deployment/admin controls separately. Future storage changes must increment the version, add an explicit migration from each supported prior version, and test that tickets and claim links remain readable. Do not assume upgrades are available for deployments without configured upgrade authority.
 
 ## Requirements
 
