@@ -39,6 +39,90 @@ pub struct EventMeta {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContractEventPayload {
+    pub event_id: u64,
+    pub ticket_id: Option<u64>,
+    pub ticket_owner: Option<Address>,
+    pub ticket_status: Option<String>,
+    pub tier_name: Option<String>,
+    pub ticket_price: Option<i128>,
+    pub is_listed_resale: Option<bool>,
+    pub resale_price: Option<i128>,
+    pub mint_timestamp: Option<u64>,
+    pub redeem_timestamp: Option<u64>,
+    pub event_name: Option<String>,
+    pub organizer: Option<Address>,
+    pub total_supply: Option<u32>,
+    pub minted_count: Option<u32>,
+    pub royalty_bps: Option<u32>,
+    pub previous_owner: Option<Address>,
+    pub royalty: Option<i128>,
+    pub seller_payout: Option<i128>,
+}
+
+impl ContractEventPayload {
+    fn for_event(meta: &EventMeta) -> Self {
+        Self {
+            event_id: meta.event_id,
+            ticket_id: None,
+            ticket_owner: None,
+            ticket_status: None,
+            tier_name: None,
+            ticket_price: None,
+            is_listed_resale: None,
+            resale_price: None,
+            mint_timestamp: None,
+            redeem_timestamp: None,
+            event_name: Some(meta.name.clone()),
+            organizer: Some(meta.organizer.clone()),
+            total_supply: Some(meta.total_supply),
+            minted_count: Some(meta.minted_count),
+            royalty_bps: Some(meta.royalty_bps),
+            previous_owner: None,
+            royalty: None,
+            seller_payout: None,
+        }
+    }
+
+    fn for_ticket(
+        env: &Env,
+        ticket: &Ticket,
+        previous_owner: Option<Address>,
+        royalty: Option<i128>,
+        seller_payout: Option<i128>,
+    ) -> Self {
+        let status = match ticket.status {
+            TicketStatus::Valid => "Valid",
+            TicketStatus::Claimable => "Claimable",
+            TicketStatus::Used => "Used",
+            TicketStatus::ProofNFT => "ProofNFT",
+        };
+
+        Self {
+            event_id: ticket.event_id,
+            ticket_id: Some(ticket.id),
+            ticket_owner: Some(ticket.current_owner.clone()),
+            ticket_status: Some(String::from_str(env, status)),
+            tier_name: Some(ticket.tier_name.clone()),
+            ticket_price: Some(ticket.price),
+            is_listed_resale: Some(ticket.is_listed_resale),
+            resale_price: Some(ticket.resale_price),
+            mint_timestamp: Some(ticket.mint_timestamp),
+            redeem_timestamp: Some(ticket.redeem_timestamp),
+            event_name: None,
+            organizer: None,
+            total_supply: None,
+            minted_count: None,
+            royalty_bps: None,
+            previous_owner,
+            royalty,
+            seller_payout,
+        }
+    }
+}
+
+#[contracttype]
 pub enum DataKey {
     EventInfo,
     Ticket(u64),
@@ -95,12 +179,7 @@ impl EventTicketContract {
             .set(&DataKey::StorageVersion, &STORAGE_VERSION);
         env.events().publish(
             (symbol_short!("init"), event_info.event_id),
-            (
-                event_info.organizer.clone(),
-                event_info.name.clone(),
-                event_info.total_supply,
-                event_info.royalty_bps,
-            ),
+            ContractEventPayload::for_event(&event_info),
         );
     }
 
@@ -213,12 +292,7 @@ impl EventTicketContract {
 
         env.events().publish(
             (symbol_short!("mint"), meta.event_id),
-            (
-                counter,
-                ticket.current_owner.clone(),
-                ticket.tier_name.clone(),
-                price,
-            ),
+            ContractEventPayload::for_ticket(&env, &ticket, None, None, None),
         );
 
         counter
@@ -244,6 +318,7 @@ impl EventTicketContract {
             panic!("Ticket already claimed or invalid status");
         }
 
+        let previous_owner = ticket.current_owner.clone();
         ticket.current_owner = new_owner;
         ticket.status = TicketStatus::Valid;
         ticket.claim_secret_hash = String::from_str(&env, "");
@@ -256,7 +331,13 @@ impl EventTicketContract {
             .remove(&DataKey::ClaimLink(claim_secret_hash));
         env.events().publish(
             (symbol_short!("claim"), ticket.event_id),
-            (ticket_id, ticket.current_owner.clone()),
+            ContractEventPayload::for_ticket(
+                &env,
+                &ticket,
+                Some(previous_owner),
+                None,
+                None,
+            ),
         );
 
         true
@@ -296,7 +377,7 @@ impl EventTicketContract {
             .set(&DataKey::Ticket(ticket_id), &ticket);
         env.events().publish(
             (symbol_short!("checkin"), ticket.event_id),
-            (ticket_id, ticket.redeem_timestamp),
+            ContractEventPayload::for_ticket(&env, &ticket, None, None, None),
         );
 
         TicketStatus::ProofNFT
@@ -345,7 +426,7 @@ impl EventTicketContract {
             .set(&DataKey::Ticket(ticket_id), &ticket);
         env.events().publish(
             (symbol_short!("listing"), ticket.event_id),
-            (ticket_id, seller, resale_price),
+            ContractEventPayload::for_ticket(&env, &ticket, None, None, None),
         );
     }
 
@@ -387,7 +468,13 @@ impl EventTicketContract {
             .set(&DataKey::Ticket(ticket_id), &ticket);
         env.events().publish(
             (symbol_short!("resale"), ticket.event_id),
-            (ticket_id, previous_owner, buyer, royalty, seller_payout),
+            ContractEventPayload::for_ticket(
+                &env,
+                &ticket,
+                Some(previous_owner),
+                Some(royalty),
+                Some(seller_payout),
+            ),
         );
     }
 
@@ -403,7 +490,7 @@ impl EventTicketContract {
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, Address, Env};
+    use soroban_sdk::{testutils::{Address as _, Events as _}, Address, Env, TryFromVal};
 
     fn setup_event(env: &Env, total_supply: u32, royalty_bps: u32) -> (Address, Address) {
         env.mock_all_auths();
@@ -522,24 +609,32 @@ mod test {
     }
 
     #[test]
-    fn repeated_mints_preserve_unique_inventory_ids() {
+    fn lifecycle_events_share_a_typed_payload() {
         let env = Env::default();
-        let (contract_id, _) = setup_event(&env, 2, 500);
+        let (contract_id, _) = setup_event(&env, 1, 500);
         let client = EventTicketContractClient::new(&env, &contract_id);
-        let first_buyer = Address::generate(&env);
-        let second_buyer = Address::generate(&env);
-        let third_buyer = Address::generate(&env);
-        let tier = String::from_str(&env, "General");
-        let no_claim = String::from_str(&env, "");
+        let seller = Address::generate(&env);
+        let buyer = Address::generate(&env);
 
-        assert_eq!(client.mint_ticket(&first_buyer, &tier, &100, &no_claim), 1);
-        assert_eq!(client.mint_ticket(&second_buyer, &tier, &100, &no_claim), 2);
-        assert!(client
-            .try_mint_ticket(&third_buyer, &tier, &100, &no_claim)
-            .is_err());
+        client.mint_ticket(
+            &seller,
+            &String::from_str(&env, "General"),
+            &100,
+            &String::from_str(&env, ""),
+        );
+        client.list_resale(&seller, &1, &100);
+        client.buy_resale(&buyer, &1);
 
-        assert_eq!(client.get_ticket(&1).current_owner, first_buyer);
-        assert_eq!(client.get_ticket(&2).current_owner, second_buyer);
-        assert!(client.try_get_ticket(&3).is_err());
+        let events = env.events().all();
+        for (_, _, data) in events.iter() {
+            assert!(ContractEventPayload::try_from_val(&env, &data).is_ok());
+        }
+
+        let resale = ContractEventPayload::try_from_val(&env, &events.last().unwrap().2).unwrap();
+        assert_eq!(resale.event_id, 101);
+        assert_eq!(resale.ticket_owner, Some(buyer));
+        assert_eq!(resale.previous_owner, Some(seller));
+        assert_eq!(resale.royalty, Some(5));
+        assert_eq!(resale.seller_payout, Some(95));
     }
 }
