@@ -24,4 +24,4 @@ stellar keys generate eventlink_deployer --network testnet --fund
 
 The script deploys the contract, initializes its event state, and prints `SOROBAN_CONTRACT_ID`. Configure that value in the backend's environment. Set `CONTRACT_NAME`, `TOTAL_SUPPLY`, and `ROYALTY_BPS` to override deployment defaults.
 
-The backend lives in [EVENT_LINK_BACKEND](https://github.com/orbit-flow-labs/EVENT_LINK_BACKEND); the frontend lives in [EVENT_LINK](https://github.com/orbit-flow-labs/EVENT_LINK).
+The backend lives in [EVENT_LINK_BACKEND-](https://github.com/orbit-flow-labs/EVENT_LINK_BACKEND-); the frontend lives in [EVENT_LINK](https://github.com/orbit-flow-labs/EVENT_LINK).
