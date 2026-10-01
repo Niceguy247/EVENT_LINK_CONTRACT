@@ -44,10 +44,13 @@ pub enum DataKey {
     Ticket(u64),
     TicketCounter,
     ClaimLink(String),
+    StorageVersion,
 }
 
 #[contract]
 pub struct EventTicketContract;
+
+const STORAGE_VERSION: u32 = 1;
 
 #[contractimpl]
 impl EventTicketContract {
@@ -87,6 +90,9 @@ impl EventTicketContract {
             .instance()
             .set(&DataKey::EventInfo, &event_info);
         env.storage().instance().set(&DataKey::TicketCounter, &0u64);
+        env.storage()
+            .instance()
+            .set(&DataKey::StorageVersion, &STORAGE_VERSION);
         env.events().publish(
             (symbol_short!("init"), event_info.event_id),
             (
@@ -96,6 +102,38 @@ impl EventTicketContract {
                 event_info.royalty_bps,
             ),
         );
+    }
+
+    /// Migrate legacy unversioned storage to the current schema version.
+    pub fn migrate_storage(env: Env) -> u32 {
+        let meta: EventMeta = env
+            .storage()
+            .instance()
+            .get(&DataKey::EventInfo)
+            .expect("Event is not initialized");
+        meta.organizer.require_auth();
+
+        let version: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::StorageVersion)
+            .unwrap_or(0);
+        if version == STORAGE_VERSION {
+            return version;
+        }
+        if version != 0 {
+            panic!("Unsupported storage version");
+        }
+
+        let _: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TicketCounter)
+            .expect("Legacy ticket counter is missing");
+        env.storage()
+            .instance()
+            .set(&DataKey::StorageVersion, &STORAGE_VERSION);
+        STORAGE_VERSION
     }
 
     /// Issue a new unique ticket digital asset / claimable balance
@@ -381,6 +419,34 @@ mod test {
         );
 
         (contract_id, organizer)
+    }
+
+    #[test]
+    fn migration_versions_legacy_storage_without_losing_tickets() {
+        let env = Env::default();
+        let (contract_id, _) = setup_event(&env, 1, 500);
+        let client = EventTicketContractClient::new(&env, &contract_id);
+        let buyer = Address::generate(&env);
+        client.mint_ticket(
+            &buyer,
+            &String::from_str(&env, "General"),
+            &100,
+            &String::from_str(&env, ""),
+        );
+
+        env.as_contract(&contract_id, || {
+            env.storage().instance().remove(&DataKey::StorageVersion);
+        });
+
+        assert_eq!(client.migrate_storage(), STORAGE_VERSION);
+        assert_eq!(client.migrate_storage(), STORAGE_VERSION);
+        assert_eq!(client.get_ticket(&1).current_owner, buyer);
+        assert_eq!(
+            env.as_contract(&contract_id, || {
+                env.storage().instance().get(&DataKey::StorageVersion)
+            }),
+            Some(STORAGE_VERSION)
+        );
     }
 
     #[test]
