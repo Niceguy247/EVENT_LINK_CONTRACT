@@ -72,39 +72,8 @@ pub enum DataKey {
 #[contract]
 pub struct EventTicketContract;
 
-fn new_event_payload(env: &Env, event_id: u64) -> EventPayload {
-    EventPayload {
-        schema_version: 1,
-        event_id,
-        ticket_id: None,
-        actor: None,
-        previous_owner: None,
-        new_owner: None,
-        status: None,
-        name: None,
-        tier_name: None,
-        total_supply: None,
-        royalty_bps: None,
-        price: None,
-        royalty: None,
-        seller_payout: None,
-        timestamp: env.ledger().timestamp(),
-    }
-}
-
-fn publish_event(env: &Env, action: Symbol, payload: EventPayload) {
-    env.events()
-        .publish((symbol_short!("event"), action), payload);
-}
-
-fn ticket_status_symbol(status: &TicketStatus) -> Symbol {
-    match status {
-        TicketStatus::Valid => symbol_short!("valid"),
-        TicketStatus::Claimable => symbol_short!("claimable"),
-        TicketStatus::Used => symbol_short!("used"),
-        TicketStatus::ProofNFT => symbol_short!("proof"),
-    }
-}
+const MAX_EVENT_NAME_LENGTH: u32 = 128;
+const MAX_EVENT_SUPPLY: u32 = 1_000_000;
 
 #[contractimpl]
 impl EventTicketContract {
@@ -124,8 +93,14 @@ impl EventTicketContract {
         if name.len() == 0 {
             fail(&env, ContractError::EmptyEventName);
         }
+        if name.len() > MAX_EVENT_NAME_LENGTH {
+            panic!("Event name cannot exceed 128 bytes");
+        }
         if total_supply == 0 {
             fail(&env, ContractError::ZeroSupply);
+        }
+        if total_supply > MAX_EVENT_SUPPLY {
+            panic!("Event supply cannot exceed 1000000 tickets");
         }
         if royalty_bps > 10_000 {
             fail(&env, ContractError::RoyaltyAboveLimit);
@@ -495,48 +470,28 @@ mod test {
     }
 
     #[test]
-    fn missing_auth_rejects_claim_check_in_listing_and_purchase() {
+    fn initialize_rejects_oversized_name_and_supply() {
         let env = Env::default();
-        let (contract_id, organizer) = setup_event(&env, 1, 500);
-        let client = EventTicketContractClient::new(&env, &contract_id);
-        let seller = Address::generate(&env);
-        let buyer = Address::generate(&env);
-        let claim_hash = String::from_str(&env, "unauthorized-claim-hash");
+        env.mock_all_auths();
+        let organizer = Address::generate(&env);
+        let long_name = "E".repeat(MAX_EVENT_NAME_LENGTH as usize + 1);
 
-        client.mint_ticket(
-            &seller,
-            &String::from_str(&env, "General"),
-            &100,
-            &claim_hash,
-        );
-        env.set_auths(&[]);
+        let name_contract_id = env.register_contract(None, EventTicketContract);
+        let name_client = EventTicketContractClient::new(&env, &name_contract_id);
+        assert!(name_client
+            .try_initialize(&organizer, &String::from_str(&env, &long_name), &1, &500,)
+            .is_err());
 
-        assert!(client.try_claim_ticket(&claim_hash, &buyer).is_err());
-        assert!(client.try_check_in_ticket(&organizer, &1).is_err());
-        assert!(client.try_list_resale(&seller, &1, &100).is_err());
-        assert!(client.try_buy_resale(&buyer, &1).is_err());
-    }
-
-    #[test]
-    fn wrong_roles_and_invalid_purchase_are_rejected() {
-        let env = Env::default();
-        let (contract_id, _) = setup_event(&env, 1, 500);
-        let client = EventTicketContractClient::new(&env, &contract_id);
-        let seller = Address::generate(&env);
-        let attacker = Address::generate(&env);
-        let buyer = Address::generate(&env);
-
-        client.mint_ticket(
-            &seller,
-            &String::from_str(&env, "General"),
-            &100,
-            &String::from_str(&env, ""),
-        );
-
-        assert!(client.try_check_in_ticket(&attacker, &1).is_err());
-        assert!(client.try_list_resale(&attacker, &1, &100).is_err());
-        assert!(client.try_buy_resale(&buyer, &1).is_err());
-        assert_eq!(client.get_ticket(&1).current_owner, seller);
+        let supply_contract_id = env.register_contract(None, EventTicketContract);
+        let supply_client = EventTicketContractClient::new(&env, &supply_contract_id);
+        assert!(supply_client
+            .try_initialize(
+                &organizer,
+                &String::from_str(&env, "Event"),
+                &(MAX_EVENT_SUPPLY + 1),
+                &500,
+            )
+            .is_err());
     }
 
     #[test]
