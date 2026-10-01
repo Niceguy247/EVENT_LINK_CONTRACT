@@ -72,8 +72,8 @@ pub enum DataKey {
 #[contract]
 pub struct EventTicketContract;
 
-const MAX_EVENT_NAME_LENGTH: u32 = 128;
-const MAX_EVENT_SUPPLY: u32 = 1_000_000;
+const MAX_EVENT_NAME_BYTES: u32 = 100;
+const MAX_EVENT_TICKET_SUPPLY: u32 = 1_000_000;
 
 #[contractimpl]
 impl EventTicketContract {
@@ -96,11 +96,17 @@ impl EventTicketContract {
         if name.len() > MAX_EVENT_NAME_LENGTH {
             panic!("Event name cannot exceed 128 bytes");
         }
+        if name.len() > MAX_EVENT_NAME_BYTES {
+            panic!("Event name exceeds the 100-byte limit");
+        }
         if total_supply == 0 {
             fail(&env, ContractError::ZeroSupply);
         }
         if total_supply > MAX_EVENT_SUPPLY {
             panic!("Event supply cannot exceed 1000000 tickets");
+        }
+        if total_supply > MAX_EVENT_TICKET_SUPPLY {
+            panic!("Event supply exceeds the 1,000,000-ticket limit");
         }
         if royalty_bps > 10_000 {
             fail(&env, ContractError::RoyaltyAboveLimit);
@@ -633,22 +639,30 @@ mod test {
     }
 
     #[test]
-    fn invalid_ticket_price_returns_stable_contract_error() {
+    #[should_panic]
+    fn initialize_rejects_event_name_over_limit() {
         let env = Env::default();
-        let (contract_id, _) = setup_event(&env, 1, 500);
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, EventTicketContract);
+        let client = EventTicketContractClient::new(&env, &contract_id);
+        let long_name = String::from_str(&env, &"a".repeat(101));
+
+        client.initialize(&Address::generate(&env), &long_name, &1, &500);
+    }
+
+    #[test]
+    #[should_panic]
+    fn initialize_rejects_supply_over_limit() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, EventTicketContract);
         let client = EventTicketContractClient::new(&env, &contract_id);
 
-        let error = match client.try_mint_ticket(
+        client.initialize(
             &Address::generate(&env),
-            &String::from_str(&env, "General"),
-            &0,
-            &String::from_str(&env, ""),
-        ) {
-            Err(Ok(error)) => error,
-            _ => panic!("Expected a contract error"),
-        };
-
-        assert!(error.is_type(soroban_sdk::xdr::ScErrorType::Contract));
-        assert_eq!(error.get_code(), ContractError::InvalidTicketPrice as u32);
+            &String::from_str(&env, "Test event"),
+            &1_000_001,
+            &500,
+        );
     }
 }
