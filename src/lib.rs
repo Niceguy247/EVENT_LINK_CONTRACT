@@ -424,6 +424,36 @@ mod test {
     }
 
     #[test]
+    fn claim_transitions_to_terminal_check_in_state() {
+        let env = Env::default();
+        let (contract_id, organizer) = setup_event(&env, 1, 500);
+        let client = EventTicketContractClient::new(&env, &contract_id);
+        let buyer = Address::generate(&env);
+        let claim_hash = String::from_str(&env, "lifecycle-claim-hash");
+
+        client.mint_ticket(
+            &buyer,
+            &String::from_str(&env, "General"),
+            &100,
+            &claim_hash,
+        );
+        assert_eq!(client.get_ticket(&1).status, TicketStatus::Claimable);
+
+        assert!(client.claim_ticket(&claim_hash, &buyer));
+        let claimed_ticket = client.get_ticket(&1);
+        assert_eq!(claimed_ticket.status, TicketStatus::Valid);
+        assert_eq!(claimed_ticket.claim_secret_hash, String::from_str(&env, ""));
+        assert!(client.try_claim_ticket(&claim_hash, &buyer).is_err());
+
+        assert_eq!(
+            client.check_in_ticket(&organizer, &1),
+            TicketStatus::ProofNFT
+        );
+        assert_eq!(client.get_ticket(&1).status, TicketStatus::ProofNFT);
+        assert!(client.try_list_resale(&buyer, &1, &100).is_err());
+    }
+
+    #[test]
     fn check_in_cancels_resale_listing() {
         let env = Env::default();
         let (contract_id, organizer) = setup_event(&env, 1, 500);
