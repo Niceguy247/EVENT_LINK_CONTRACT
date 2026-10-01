@@ -113,6 +113,14 @@ impl EventTicketContract {
         if meta.minted_count >= meta.total_supply {
             panic!("Event sold out");
         }
+        if claim_secret_hash.len() > 0
+            && env
+                .storage()
+                .persistent()
+                .has(&DataKey::ClaimLink(claim_secret_hash.clone()))
+        {
+            panic!("Claim link is already in use");
+        }
 
         let mut counter: u64 = env
             .storage()
@@ -234,6 +242,8 @@ impl EventTicketContract {
         // Convert ticket -> Proof of Attendance NFT
         ticket.status = TicketStatus::ProofNFT;
         ticket.redeem_timestamp = env.ledger().timestamp();
+        ticket.is_listed_resale = false;
+        ticket.resale_price = 0;
 
         env.storage()
             .persistent()
@@ -293,7 +303,7 @@ impl EventTicketContract {
         );
     }
 
-    /// Buy resale ticket with automatic royalty payment to organizer
+    /// Transfer a listed ticket and record royalty payout values in an event
     pub fn buy_resale(env: Env, buyer: Address, ticket_id: u64) {
         buyer.require_auth();
 
@@ -306,6 +316,9 @@ impl EventTicketContract {
         if !ticket.is_listed_resale {
             panic!("Ticket is not listed for resale");
         }
+        if ticket.status != TicketStatus::Valid {
+            panic!("Only valid tickets can be purchased");
+        }
         if ticket.current_owner == buyer {
             panic!("Ticket owner cannot purchase their own listing");
         }
@@ -313,7 +326,9 @@ impl EventTicketContract {
         let meta: EventMeta = env.storage().instance().get(&DataKey::EventInfo).unwrap();
 
         // Calculate Royalty
-        let royalty = (ticket.resale_price * meta.royalty_bps as i128) / 10000;
+        let royalty_bps = meta.royalty_bps as i128;
+        let royalty = (ticket.resale_price / 10_000) * royalty_bps
+            + ((ticket.resale_price % 10_000) * royalty_bps) / 10_000;
         let seller_payout = ticket.resale_price - royalty;
 
         let previous_owner = ticket.current_owner.clone();
@@ -336,5 +351,99 @@ impl EventTicketContract {
             .persistent()
             .get(&DataKey::Ticket(ticket_id))
             .unwrap()
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use soroban_sdk::{testutils::Address as _, Address, Env};
+
+    fn setup_event(env: &Env, total_supply: u32, royalty_bps: u32) -> (Address, Address) {
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, EventTicketContract);
+        let client = EventTicketContractClient::new(env, &contract_id);
+        let organizer = Address::generate(env);
+
+        client.initialize(
+            &organizer,
+            &String::from_str(env, "Event"),
+            &total_supply,
+            &royalty_bps,
+        );
+
+        (contract_id, organizer)
+    }
+
+    #[test]
+    fn buy_resale_handles_large_royalty_calculation() {
+        let env = Env::default();
+        let (contract_id, _) = setup_event(&env, 1, 500);
+        let client = EventTicketContractClient::new(&env, &contract_id);
+        let seller = Address::generate(&env);
+        let buyer = Address::generate(&env);
+
+        client.mint_ticket(
+            &seller,
+            &String::from_str(&env, "General"),
+            &i128::MAX,
+            &String::from_str(&env, ""),
+        );
+        client.list_resale(&seller, &1, &i128::MAX);
+        client.buy_resale(&buyer, &1);
+
+        assert_eq!(client.get_ticket(&1).current_owner, buyer);
+    }
+
+    #[test]
+    fn mint_rejects_duplicate_claim_links() {
+        let env = Env::default();
+        let (contract_id, _) = setup_event(&env, 2, 500);
+        let client = EventTicketContractClient::new(&env, &contract_id);
+        let first_buyer = Address::generate(&env);
+        let second_buyer = Address::generate(&env);
+        let claim_secret_hash = String::from_str(&env, "unique-claim-hash");
+
+        client.mint_ticket(
+            &first_buyer,
+            &String::from_str(&env, "General"),
+            &100,
+            &claim_secret_hash,
+        );
+
+        assert!(client
+            .try_mint_ticket(
+                &second_buyer,
+                &String::from_str(&env, "General"),
+                &100,
+                &claim_secret_hash,
+            )
+            .is_err());
+
+        assert_eq!(client.get_ticket(&1).current_owner, first_buyer);
+    }
+
+    #[test]
+    fn check_in_cancels_resale_listing() {
+        let env = Env::default();
+        let (contract_id, organizer) = setup_event(&env, 1, 500);
+        let client = EventTicketContractClient::new(&env, &contract_id);
+        let seller = Address::generate(&env);
+
+        client.mint_ticket(
+            &seller,
+            &String::from_str(&env, "General"),
+            &100,
+            &String::from_str(&env, ""),
+        );
+        client.list_resale(&seller, &1, &100);
+        client.check_in_ticket(&organizer, &1);
+
+        let ticket = client.get_ticket(&1);
+        assert_eq!(ticket.status, TicketStatus::ProofNFT);
+        assert!(!ticket.is_listed_resale);
+        assert_eq!(ticket.resale_price, 0);
+        assert!(client.try_buy_resale(&Address::generate(&env), &1).is_err());
+        assert_eq!(client.get_ticket(&1).current_owner, seller);
     }
 }
