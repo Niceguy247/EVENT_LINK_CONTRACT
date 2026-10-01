@@ -24,3 +24,19 @@ fn initializes_and_mints_ticket_for_event() {
     assert_eq!(ticket.current_owner, buyer);
     assert_eq!(ticket.status, TicketStatus::Valid);
 }
+
+#[test]
+#[should_panic]
+fn initialize_rejects_empty_event_name() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, EventTicketContract);
+    let client = EventTicketContractClient::new(&env, &contract_id);
+
+    client.initialize(
+        &Address::generate(&env),
+        &String::from_str(&env, ""),
+        &1,
+        &500,
+    );
+}
