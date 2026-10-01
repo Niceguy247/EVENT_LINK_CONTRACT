@@ -1,5 +1,7 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, String};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, symbol_short, Address, Env, String, Symbol,
+};
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -39,15 +41,39 @@ pub struct EventMeta {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EventPayload {
+    pub schema_version: u32,
+    pub event_id: u64,
+    pub ticket_id: Option<u64>,
+    pub actor: Option<Address>,
+    pub previous_owner: Option<Address>,
+    pub new_owner: Option<Address>,
+    pub status: Option<Symbol>,
+    pub name: Option<String>,
+    pub tier_name: Option<String>,
+    pub total_supply: Option<u32>,
+    pub royalty_bps: Option<u32>,
+    pub price: Option<i128>,
+    pub royalty: Option<i128>,
+    pub seller_payout: Option<i128>,
+    pub timestamp: u64,
+}
+
+#[contracttype]
 pub enum DataKey {
     EventInfo,
     Ticket(u64),
     TicketCounter,
     ClaimLink(String),
+    StorageVersion,
 }
 
 #[contract]
 pub struct EventTicketContract;
+
+const MAX_EVENT_NAME_BYTES: u32 = 100;
+const MAX_EVENT_TICKET_SUPPLY: u32 = 1_000_000;
 
 #[contractimpl]
 impl EventTicketContract {
@@ -62,16 +88,28 @@ impl EventTicketContract {
         organizer.require_auth();
 
         if env.storage().instance().has(&DataKey::EventInfo) {
-            panic!("Contract is already initialized");
+            fail(&env, ContractError::AlreadyInitialized);
         }
         if name.len() == 0 {
-            panic!("Event name cannot be empty");
+            fail(&env, ContractError::EmptyEventName);
+        }
+        if name.len() > MAX_EVENT_NAME_LENGTH {
+            panic!("Event name cannot exceed 128 bytes");
+        }
+        if name.len() > MAX_EVENT_NAME_BYTES {
+            panic!("Event name exceeds the 100-byte limit");
         }
         if total_supply == 0 {
-            panic!("Event supply must be greater than zero");
+            fail(&env, ContractError::ZeroSupply);
+        }
+        if total_supply > MAX_EVENT_SUPPLY {
+            panic!("Event supply cannot exceed 1000000 tickets");
+        }
+        if total_supply > MAX_EVENT_TICKET_SUPPLY {
+            panic!("Event supply exceeds the 1,000,000-ticket limit");
         }
         if royalty_bps > 10_000 {
-            panic!("Royalty rate cannot exceed 100 percent");
+            fail(&env, ContractError::RoyaltyAboveLimit);
         }
 
         let event_info = EventMeta {
@@ -87,15 +125,44 @@ impl EventTicketContract {
             .instance()
             .set(&DataKey::EventInfo, &event_info);
         env.storage().instance().set(&DataKey::TicketCounter, &0u64);
-        env.events().publish(
-            (symbol_short!("init"), event_info.event_id),
-            (
-                event_info.organizer.clone(),
-                event_info.name.clone(),
-                event_info.total_supply,
-                event_info.royalty_bps,
-            ),
-        );
+        let mut payload = new_event_payload(&env, event_info.event_id);
+        payload.actor = Some(event_info.organizer.clone());
+        payload.name = Some(event_info.name.clone());
+        payload.total_supply = Some(event_info.total_supply);
+        payload.royalty_bps = Some(event_info.royalty_bps);
+        publish_event(&env, symbol_short!("init"), payload);
+    }
+
+    /// Migrate legacy unversioned storage to the current schema version.
+    pub fn migrate_storage(env: Env) -> u32 {
+        let meta: EventMeta = env
+            .storage()
+            .instance()
+            .get(&DataKey::EventInfo)
+            .expect("Event is not initialized");
+        meta.organizer.require_auth();
+
+        let version: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::StorageVersion)
+            .unwrap_or(0);
+        if version == STORAGE_VERSION {
+            return version;
+        }
+        if version != 0 {
+            panic!("Unsupported storage version");
+        }
+
+        let _: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TicketCounter)
+            .expect("Legacy ticket counter is missing");
+        env.storage()
+            .instance()
+            .set(&DataKey::StorageVersion, &STORAGE_VERSION);
+        STORAGE_VERSION
     }
 
     /// Issue a new unique ticket digital asset / claimable balance
@@ -106,12 +173,16 @@ impl EventTicketContract {
         price: i128,
         claim_secret_hash: String,
     ) -> u64 {
-        let mut meta: EventMeta = env.storage().instance().get(&DataKey::EventInfo).unwrap();
+        let mut meta: EventMeta = env
+            .storage()
+            .instance()
+            .get(&DataKey::EventInfo)
+            .unwrap_or_else(|| fail(&env, ContractError::EventNotInitialized));
         if price <= 0 {
-            panic!("Ticket price must be greater than zero");
+            fail(&env, ContractError::InvalidTicketPrice);
         }
         if meta.minted_count >= meta.total_supply {
-            panic!("Event sold out");
+            fail(&env, ContractError::EventSoldOut);
         }
         if claim_secret_hash.len() > 0
             && env
@@ -119,7 +190,7 @@ impl EventTicketContract {
                 .persistent()
                 .has(&DataKey::ClaimLink(claim_secret_hash.clone()))
         {
-            panic!("Claim link is already in use");
+            fail(&env, ContractError::DuplicateClaimLink);
         }
 
         let mut counter: u64 = env
@@ -127,8 +198,13 @@ impl EventTicketContract {
             .instance()
             .get(&DataKey::TicketCounter)
             .unwrap_or(0);
-        counter += 1;
-        meta.minted_count += 1;
+        counter = counter
+            .checked_add(1)
+            .unwrap_or_else(|| fail(&env, ContractError::TicketCounterOverflow));
+        meta.minted_count = meta
+            .minted_count
+            .checked_add(1)
+            .unwrap_or_else(|| fail(&env, ContractError::MintedInventoryOverflow));
 
         let status = if claim_secret_hash.len() > 0 {
             TicketStatus::Claimable
@@ -165,15 +241,14 @@ impl EventTicketContract {
                 .set(&DataKey::ClaimLink(claim_secret_hash), &counter);
         }
 
-        env.events().publish(
-            (symbol_short!("mint"), meta.event_id),
-            (
-                counter,
-                ticket.current_owner.clone(),
-                ticket.tier_name.clone(),
-                price,
-            ),
-        );
+        let mut payload = new_event_payload(&env, meta.event_id);
+        payload.ticket_id = Some(counter);
+        payload.actor = Some(ticket.current_owner.clone());
+        payload.new_owner = Some(ticket.current_owner.clone());
+        payload.status = Some(ticket_status_symbol(&ticket.status));
+        payload.tier_name = Some(ticket.tier_name.clone());
+        payload.price = Some(price);
+        publish_event(&env, symbol_short!("mint"), payload);
 
         counter
     }
@@ -186,18 +261,19 @@ impl EventTicketContract {
             .storage()
             .persistent()
             .get(&DataKey::ClaimLink(claim_secret_hash.clone()))
-            .expect("Invalid or expired claim link");
+            .unwrap_or_else(|| fail(&env, ContractError::InvalidClaimLink));
 
         let mut ticket: Ticket = env
             .storage()
             .persistent()
             .get(&DataKey::Ticket(ticket_id))
-            .expect("Ticket not found");
+            .unwrap_or_else(|| fail(&env, ContractError::TicketNotFound));
 
         if ticket.status != TicketStatus::Claimable {
-            panic!("Ticket already claimed or invalid status");
+            fail(&env, ContractError::InvalidTicketStatus);
         }
 
+        let previous_owner = ticket.current_owner.clone();
         ticket.current_owner = new_owner;
         ticket.status = TicketStatus::Valid;
         ticket.claim_secret_hash = String::from_str(&env, "");
@@ -208,10 +284,13 @@ impl EventTicketContract {
         env.storage()
             .persistent()
             .remove(&DataKey::ClaimLink(claim_secret_hash));
-        env.events().publish(
-            (symbol_short!("claim"), ticket.event_id),
-            (ticket_id, ticket.current_owner.clone()),
-        );
+        let mut payload = new_event_payload(&env, ticket.event_id);
+        payload.ticket_id = Some(ticket_id);
+        payload.actor = Some(ticket.current_owner.clone());
+        payload.previous_owner = Some(previous_owner);
+        payload.new_owner = Some(ticket.current_owner.clone());
+        payload.status = Some(ticket_status_symbol(&ticket.status));
+        publish_event(&env, symbol_short!("claim"), payload);
 
         true
     }
@@ -220,23 +299,27 @@ impl EventTicketContract {
     pub fn check_in_ticket(env: Env, organizer: Address, ticket_id: u64) -> TicketStatus {
         organizer.require_auth();
 
-        let meta: EventMeta = env.storage().instance().get(&DataKey::EventInfo).unwrap();
+        let meta: EventMeta = env
+            .storage()
+            .instance()
+            .get(&DataKey::EventInfo)
+            .unwrap_or_else(|| fail(&env, ContractError::EventNotInitialized));
         if meta.organizer != organizer {
-            panic!("Unauthorized gatekeeper");
+            fail(&env, ContractError::UnauthorizedOrganizer);
         }
 
         let mut ticket: Ticket = env
             .storage()
             .persistent()
             .get(&DataKey::Ticket(ticket_id))
-            .expect("Ticket not found");
+            .unwrap_or_else(|| fail(&env, ContractError::TicketNotFound));
 
         if ticket.status == TicketStatus::Used || ticket.status == TicketStatus::ProofNFT {
-            panic!("DOUBLE USE PREVENTED: Ticket already redeemed!");
+            fail(&env, ContractError::TicketAlreadyUsed);
         }
 
         if ticket.status != TicketStatus::Valid {
-            panic!("Ticket cannot be redeemed: Unclaimed or invalid");
+            fail(&env, ContractError::InvalidTicketStatus);
         }
 
         // Convert ticket -> Proof of Attendance NFT
@@ -248,10 +331,11 @@ impl EventTicketContract {
         env.storage()
             .persistent()
             .set(&DataKey::Ticket(ticket_id), &ticket);
-        env.events().publish(
-            (symbol_short!("checkin"), ticket.event_id),
-            (ticket_id, ticket.redeem_timestamp),
-        );
+        let mut payload = new_event_payload(&env, ticket.event_id);
+        payload.ticket_id = Some(ticket_id);
+        payload.actor = Some(organizer);
+        payload.status = Some(ticket_status_symbol(&ticket.status));
+        publish_event(&env, symbol_short!("checkin"), payload);
 
         TicketStatus::ProofNFT
     }
@@ -264,21 +348,21 @@ impl EventTicketContract {
             .storage()
             .persistent()
             .get(&DataKey::Ticket(ticket_id))
-            .expect("Ticket not found");
+            .unwrap_or_else(|| fail(&env, ContractError::TicketNotFound));
 
         if ticket.current_owner != seller {
-            panic!("Not ticket owner");
+            fail(&env, ContractError::NotTicketOwner);
         }
 
         if ticket.status != TicketStatus::Valid {
-            panic!("Only valid tickets can be listed for resale");
+            fail(&env, ContractError::InvalidTicketStatus);
         }
         if ticket.is_listed_resale {
-            panic!("Ticket is already listed for resale");
+            fail(&env, ContractError::TicketAlreadyListed);
         }
 
         if ticket.price <= 0 || resale_price <= 0 {
-            panic!("Ticket and resale prices must be greater than zero");
+            fail(&env, ContractError::InvalidResalePrice);
         }
 
         // Anti-scalping cap: Max 150% of original price.
@@ -287,7 +371,7 @@ impl EventTicketContract {
             .checked_add(ticket.price / 2)
             .unwrap_or(i128::MAX);
         if resale_price > max_resale {
-            panic!("Resale price exceeds anti-scalping price cap (150%)");
+            fail(&env, ContractError::ResalePriceAboveCap);
         }
 
         ticket.is_listed_resale = true;
@@ -296,10 +380,12 @@ impl EventTicketContract {
         env.storage()
             .persistent()
             .set(&DataKey::Ticket(ticket_id), &ticket);
-        env.events().publish(
-            (symbol_short!("listing"), ticket.event_id),
-            (ticket_id, seller, resale_price),
-        );
+        let mut payload = new_event_payload(&env, ticket.event_id);
+        payload.ticket_id = Some(ticket_id);
+        payload.actor = Some(seller.clone());
+        payload.status = Some(ticket_status_symbol(&ticket.status));
+        payload.price = Some(resale_price);
+        publish_event(&env, symbol_short!("listing"), payload);
     }
 
     /// Transfer a listed ticket and record royalty payout values in an event
@@ -310,25 +396,30 @@ impl EventTicketContract {
             .storage()
             .persistent()
             .get(&DataKey::Ticket(ticket_id))
-            .expect("Ticket not found");
+            .unwrap_or_else(|| fail(&env, ContractError::TicketNotFound));
 
         if !ticket.is_listed_resale {
-            panic!("Ticket is not listed for resale");
+            fail(&env, ContractError::TicketNotListed);
         }
         if ticket.status != TicketStatus::Valid {
-            panic!("Only valid tickets can be purchased");
+            fail(&env, ContractError::InvalidTicketStatus);
         }
         if ticket.current_owner == buyer {
-            panic!("Ticket owner cannot purchase their own listing");
+            fail(&env, ContractError::CannotBuyOwnListing);
         }
 
-        let meta: EventMeta = env.storage().instance().get(&DataKey::EventInfo).unwrap();
+        let meta: EventMeta = env
+            .storage()
+            .instance()
+            .get(&DataKey::EventInfo)
+            .unwrap_or_else(|| fail(&env, ContractError::EventNotInitialized));
 
         // Calculate Royalty
+        let resale_price = ticket.resale_price;
         let royalty_bps = meta.royalty_bps as i128;
-        let royalty = (ticket.resale_price / 10_000) * royalty_bps
-            + ((ticket.resale_price % 10_000) * royalty_bps) / 10_000;
-        let seller_payout = ticket.resale_price - royalty;
+        let royalty = (resale_price / 10_000) * royalty_bps
+            + ((resale_price % 10_000) * royalty_bps) / 10_000;
+        let seller_payout = resale_price - royalty;
 
         let previous_owner = ticket.current_owner.clone();
         ticket.current_owner = buyer.clone();
@@ -338,10 +429,16 @@ impl EventTicketContract {
         env.storage()
             .persistent()
             .set(&DataKey::Ticket(ticket_id), &ticket);
-        env.events().publish(
-            (symbol_short!("resale"), ticket.event_id),
-            (ticket_id, previous_owner, buyer, royalty, seller_payout),
-        );
+        let mut payload = new_event_payload(&env, ticket.event_id);
+        payload.ticket_id = Some(ticket_id);
+        payload.actor = Some(buyer.clone());
+        payload.previous_owner = Some(previous_owner);
+        payload.new_owner = Some(buyer);
+        payload.status = Some(ticket_status_symbol(&ticket.status));
+        payload.price = Some(resale_price);
+        payload.royalty = Some(royalty);
+        payload.seller_payout = Some(seller_payout);
+        publish_event(&env, symbol_short!("resale"), payload);
     }
 
     /// Fetch ticket details
@@ -349,14 +446,17 @@ impl EventTicketContract {
         env.storage()
             .persistent()
             .get(&DataKey::Ticket(ticket_id))
-            .unwrap()
+            .unwrap_or_else(|| fail(&env, ContractError::TicketNotFound))
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, Address, Env};
+    use soroban_sdk::{
+        testutils::{Address as _, Events as _},
+        Address, Env, TryFromVal,
+    };
 
     fn setup_event(env: &Env, total_supply: u32, royalty_bps: u32) -> (Address, Address) {
         env.mock_all_auths();
@@ -372,6 +472,31 @@ mod test {
         );
 
         (contract_id, organizer)
+    }
+
+    #[test]
+    fn initialize_rejects_oversized_name_and_supply() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let organizer = Address::generate(&env);
+        let long_name = "E".repeat(MAX_EVENT_NAME_LENGTH as usize + 1);
+
+        let name_contract_id = env.register_contract(None, EventTicketContract);
+        let name_client = EventTicketContractClient::new(&env, &name_contract_id);
+        assert!(name_client
+            .try_initialize(&organizer, &String::from_str(&env, &long_name), &1, &500,)
+            .is_err());
+
+        let supply_contract_id = env.register_contract(None, EventTicketContract);
+        let supply_client = EventTicketContractClient::new(&env, &supply_contract_id);
+        assert!(supply_client
+            .try_initialize(
+                &organizer,
+                &String::from_str(&env, "Event"),
+                &(MAX_EVENT_SUPPLY + 1),
+                &500,
+            )
+            .is_err());
     }
 
     #[test]
@@ -392,6 +517,42 @@ mod test {
         client.buy_resale(&buyer, &1);
 
         assert_eq!(client.get_ticket(&1).current_owner, buyer);
+    }
+
+    #[test]
+    fn lifecycle_events_share_versioned_payload_schema() {
+        let env = Env::default();
+        let (contract_id, organizer) = setup_event(&env, 1, 500);
+        let client = EventTicketContractClient::new(&env, &contract_id);
+        let seller = Address::generate(&env);
+        let buyer = Address::generate(&env);
+        let claim_hash = String::from_str(&env, "event-schema-claim-hash");
+
+        client.mint_ticket(
+            &seller,
+            &String::from_str(&env, "General"),
+            &100,
+            &claim_hash,
+        );
+        client.claim_ticket(&claim_hash, &seller);
+        client.list_resale(&seller, &1, &100);
+        client.buy_resale(&buyer, &1);
+        client.check_in_ticket(&organizer, &1);
+
+        let events = env.events().all();
+        assert_eq!(events.len(), 6);
+        for index in 0..events.len() {
+            let (_, topics, data) = events.get(index).unwrap();
+            assert_eq!(topics.len(), 2);
+            assert_eq!(
+                Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap(),
+                symbol_short!("event")
+            );
+            let payload = EventPayload::try_from_val(&env, &data).unwrap();
+            assert_eq!(payload.schema_version, 1);
+            assert_eq!(payload.event_id, 101);
+            assert_eq!(payload.ticket_id.is_some(), index > 0);
+        }
     }
 
     #[test]
@@ -420,6 +581,36 @@ mod test {
             .is_err());
 
         assert_eq!(client.get_ticket(&1).current_owner, first_buyer);
+    }
+
+    #[test]
+    fn claim_transitions_to_terminal_check_in_state() {
+        let env = Env::default();
+        let (contract_id, organizer) = setup_event(&env, 1, 500);
+        let client = EventTicketContractClient::new(&env, &contract_id);
+        let buyer = Address::generate(&env);
+        let claim_hash = String::from_str(&env, "lifecycle-claim-hash");
+
+        client.mint_ticket(
+            &buyer,
+            &String::from_str(&env, "General"),
+            &100,
+            &claim_hash,
+        );
+        assert_eq!(client.get_ticket(&1).status, TicketStatus::Claimable);
+
+        assert!(client.claim_ticket(&claim_hash, &buyer));
+        let claimed_ticket = client.get_ticket(&1);
+        assert_eq!(claimed_ticket.status, TicketStatus::Valid);
+        assert_eq!(claimed_ticket.claim_secret_hash, String::from_str(&env, ""));
+        assert!(client.try_claim_ticket(&claim_hash, &buyer).is_err());
+
+        assert_eq!(
+            client.check_in_ticket(&organizer, &1),
+            TicketStatus::ProofNFT
+        );
+        assert_eq!(client.get_ticket(&1).status, TicketStatus::ProofNFT);
+        assert!(client.try_list_resale(&buyer, &1, &100).is_err());
     }
 
     #[test]
