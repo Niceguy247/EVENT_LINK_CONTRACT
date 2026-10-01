@@ -72,3 +72,26 @@ fn initialize_rejects_royalty_above_one_hundred_percent() {
         &10_001,
     );
 }
+
+#[test]
+fn initialize_accepts_one_hundred_percent_royalty() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, EventTicketContract);
+    let client = EventTicketContractClient::new(&env, &contract_id);
+
+    client.initialize(
+        &Address::generate(&env),
+        &String::from_str(&env, "Test event"),
+        &1,
+        &10_000,
+    );
+    let ticket_id = client.mint_ticket(
+        &Address::generate(&env),
+        &String::from_str(&env, "General"),
+        &100,
+        &String::from_str(&env, ""),
+    );
+
+    assert_eq!(client.get_ticket(&ticket_id).price, 100);
+}
