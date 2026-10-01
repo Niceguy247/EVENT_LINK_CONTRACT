@@ -26,7 +26,7 @@ The current contract stores one event (`event_id` is initialized to `101`) and t
 | `buy_resale(buyer, ticket_id)` | Change ticket ownership for a listed ticket and record the royalty/seller payout values in an event. |
 | `get_ticket(ticket_id)` | Read a stored ticket record. |
 
-Lifecycle events keep their existing topics (`init`, `mint`, `claim`, `checkin`, `listing`, and `resale`) and share the flattened `ContractEventPayload` data schema. The payload always includes `event_id`; initialization supplies event metadata fields, while ticket operations supply the complete updated ticket fields. Ownership changes additionally include `previous_owner`, and resale payouts populate `royalty` and `seller_payout`. Fields that do not apply are `None`. Indexers should also account for ledger event retention and indexing policy.
+Every lifecycle event uses the two-topic form `(event, action)` and the same `EventPayload` data structure. Payloads include `schema_version` (currently `1`), `event_id`, optional `ticket_id`, `actor`, `previous_owner`, `new_owner`, `status`, `name`, `tier_name`, `total_supply`, `royalty_bps`, `price`, `royalty`, and `seller_payout`, plus `timestamp`. Status symbols are `valid`, `claimable`, `used`, and `proof`; ownership fields are populated only when relevant. Unused fields are `None`. The action topic is `init`, `mint`, `claim`, `checkin`, `listing`, or `resale`; incompatible payload changes require a schema-version change. Indexers should filter by the `event` namespace and decode the version before interpreting optional fields. Ledger event retention and indexing policy still apply.
 
 ### Current limitations
 
