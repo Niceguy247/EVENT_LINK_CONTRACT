@@ -376,6 +376,51 @@ mod test {
     }
 
     #[test]
+    fn missing_auth_rejects_claim_check_in_listing_and_purchase() {
+        let env = Env::default();
+        let (contract_id, organizer) = setup_event(&env, 1, 500);
+        let client = EventTicketContractClient::new(&env, &contract_id);
+        let seller = Address::generate(&env);
+        let buyer = Address::generate(&env);
+        let claim_hash = String::from_str(&env, "unauthorized-claim-hash");
+
+        client.mint_ticket(
+            &seller,
+            &String::from_str(&env, "General"),
+            &100,
+            &claim_hash,
+        );
+        env.set_auths(&[]);
+
+        assert!(client.try_claim_ticket(&claim_hash, &buyer).is_err());
+        assert!(client.try_check_in_ticket(&organizer, &1).is_err());
+        assert!(client.try_list_resale(&seller, &1, &100).is_err());
+        assert!(client.try_buy_resale(&buyer, &1).is_err());
+    }
+
+    #[test]
+    fn wrong_roles_and_invalid_purchase_are_rejected() {
+        let env = Env::default();
+        let (contract_id, _) = setup_event(&env, 1, 500);
+        let client = EventTicketContractClient::new(&env, &contract_id);
+        let seller = Address::generate(&env);
+        let attacker = Address::generate(&env);
+        let buyer = Address::generate(&env);
+
+        client.mint_ticket(
+            &seller,
+            &String::from_str(&env, "General"),
+            &100,
+            &String::from_str(&env, ""),
+        );
+
+        assert!(client.try_check_in_ticket(&attacker, &1).is_err());
+        assert!(client.try_list_resale(&attacker, &1, &100).is_err());
+        assert!(client.try_buy_resale(&buyer, &1).is_err());
+        assert_eq!(client.get_ticket(&1).current_owner, seller);
+    }
+
+    #[test]
     fn buy_resale_handles_large_royalty_calculation() {
         let env = Env::default();
         let (contract_id, _) = setup_event(&env, 1, 500);
