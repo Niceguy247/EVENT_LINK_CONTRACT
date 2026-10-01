@@ -64,6 +64,10 @@ cargo build --target wasm32-unknown-unknown --release
 
 The GitHub Actions workflow runs these same checks on pull requests and pushes to `main`.
 
+### Contract errors
+
+Expected contract failures use the public `Error` numeric codes (1-21) instead of string panics; `ContractError` is an alias for this enum. Clients should decode these errors by enum value; Soroban authorization failures from `require_auth` remain native authorization errors. Missing tickets and invalid claim links are reported as `TicketNotFound` and `InvalidClaimLink`, respectively.
+
 ## Deploy to Stellar Testnet
 
 First install and configure Stellar CLI, then create or select a funded Testnet key named `eventlink_deployer`:
